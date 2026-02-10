@@ -3,6 +3,11 @@
 - https://en.wikipedia.org/wiki/Conflict-driven_clause_learning
 - GRASP
 - https://arxiv.org/abs/1702.08392 for learnign abotu k-CNF phase transitions, density.
+    - I thought I would  have some kind of phase transition heuristic (peaked at 4.26 which is what Vardi et al said was a phase transition point for 3-SAT.) However, this didn't seem to help. We were never hitting this path for the harder density instances in the test input suite. 
+   - Instead, moved to something Serdar suggested-- just fixed random frequency / diversification.
+   - I did briefly toy with the idea of just giving UNSAT for extremely high density. This means my solver would not be complete, however. On the other hand, it would be correct with high probability, and extremly fast on some UNSAT cases.
+
+
 - Led to https://www.cs.utexas.edu/~marijn/publications/rapid.pdf for restarts
    - Luby et al : Sequence of restart sizes based on constant unit run. This is what MiniSat does.
    - "The solver picoSAT [7] introduced a frequent restart strategy in which the

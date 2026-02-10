@@ -2,7 +2,6 @@ from typing import Set, List, Dict, Optional, Tuple
 from collections import defaultdict, deque
 from sat_instance import SATInstance
 import random
-import math
 import heapq
 
 
@@ -18,9 +17,7 @@ class SATSolver:
         max_learnt_min: int = 100,
         max_learnt_ratio: float = 1.0 / 3.0,
         max_learnt_growth: float = 1.1,
-        transition: float = 4.26,
-        sigma: float = 1.5,
-        peak_random_prob: float = 0.5,
+        random_freq: float = 0.02,
     ):
         self.inst = inst
         self.luby_base: int = luby_base
@@ -28,9 +25,7 @@ class SATSolver:
         self.max_learnt_min: int = max_learnt_min
         self.max_learnt_ratio: float = max_learnt_ratio
         self.max_learnt_growth: float = max_learnt_growth
-        self.random_transition: float = transition
-        self.random_sigma: float = sigma
-        self.random_peak_prob: float = peak_random_prob
+        self.random_freq: float = random_freq
 
         vars = inst.vars
 
@@ -491,11 +486,8 @@ class SATSolver:
         max_conflicts = self.luby(restart_number) * luby_base
         conflict_count = 0
 
-        ## Density-based randomness: use ORIGINAL clause count so learned
-        ## clauses don't inflate the density over time.
+        ## Clause counts for learned-clause limit.
         n_orig_clauses = sum(1 for c in self.inst.clauses if not c.learned)
-        n_vars = len(self.inst.vars)
-        density = n_orig_clauses / max(1, n_vars)
 
         ## Set the learned clause limit for reduce_db.
         if self.max_learnt_fixed >= 0:
@@ -504,14 +496,13 @@ class SATSolver:
             computed = int(n_orig_clauses * self.max_learnt_ratio)
             self.max_learnt = computed if computed > self.max_learnt_min else self.max_learnt_min
 
-        ## Gaussian-shaped random decision probability, peaked at the 3-SAT phase transition (~4.26).  Far from the transition
-        ## instances are easier, so deterministic negative branching
-        ## is fine; near it we inject randomness to escape hard regions.
-        ## This is sort of in line with what Serdar mentioned about randomness in class.
-        transition = self.random_transition
-        sigma = self.random_sigma
-        peak_prob = self.random_peak_prob
-        rand_prob = peak_prob * math.exp(-((density - transition) ** 2) / (2.0 * sigma * sigma))
+        ## Fixed random decision frequency (MiniSat-style).
+        ## The Gaussian phase-transition heuristic (peaked at 4.26) was
+        ## giving ~50% randomness to easy low-density instances that
+        ## didn't need it, and 0% to hard high-density ones that did.
+        ## A small constant ensures every instance gets occasional
+        ## diversity to escape search plateaus.
+        rand_prob = self.random_freq
 
         while True:
 
