@@ -49,6 +49,18 @@ class SATSolver:
         self.var_heap: List[Tuple[float, int]] = [(0.0, v) for v in vars]
         heapq.heapify(self.var_heap)
 
+        ## ── Clause activity (for learned clause deletion) ────────────
+        ## Mirrors VSIDS but for clauses: recently-useful learned clauses
+        ## get bumped, older ones decay.  On cleanup we keep the top half
+        ## by activity and delete the rest.
+        self.clause_activity: Dict[int, float] = {}   # cid -> activity
+        self.clause_inc: float = 1.0
+        self.clause_decay: float = 0.999
+        ## How many learned clauses before we trigger a cleanup.
+        self.max_learnt: int = max(100, n_orig_clauses // 3) if hasattr(self, '_orig_clause_count') else 100
+        ## Track which cids are learned and alive (not deleted).
+        self.alive_learned: Set[int] = set()
+
         ## Maps a literal to the list of clause IDs watching it.
         self.watch_list: Dict[int, List[int]] = defaultdict(list)
         self._init_watches()
@@ -79,6 +91,79 @@ class SATSolver:
 
     def decay_activity(self) -> None:
         self.var_inc /= self.var_decay
+
+    ## Clause activity helpers to prevent 
+    ## the learned clause DB from exploding in size.
+
+    
+    def bump_clause_activity(self, cid: int) -> None:
+        """Bump a learned clause's activity when it was a reason clause for a resolved var)."""
+        if cid not in self.clause_activity:
+            return
+        self.clause_activity[cid] += self.clause_inc
+        if self.clause_activity[cid] > 1e100:
+            for c in self.clause_activity:
+                self.clause_activity[c] *= 1e-100
+            self.clause_inc *= 1e-100
+
+    def decay_clause_activity(self) -> None:
+        ## Same idea as VSIDS: inflate the increment instead of shrinking every score.
+        ## Saves a small increment of time since its O(1) instead of O(num learned clauses).
+        self.clause_inc /= self.clause_decay
+
+    def reduce_db(self) -> None:
+        """Delete roughly half of the learned clauses — keep the ones
+        with the highest activity.  Locked clauses (currently used as a
+        reason for a propagated variable) are never deleted."""
+        if not self.alive_learned:
+            return
+
+        # Determine which cids are locked (reason for a current assignment)
+        locked: Set[int] = set()
+        for v in self.inst.vars:
+            r = self.reasons.get(v)
+            if r is not None and r in self.alive_learned:
+                locked.add(r)
+
+        # Sort removable learned clauses by activity (ascending)
+        removable = [(self.clause_activity.get(cid, 0.0), cid)
+                     for cid in self.alive_learned if cid not in locked]
+        removable.sort()
+
+        # Delete the bottom half
+        n_to_delete = len(removable) // 2
+        for idx in range(n_to_delete):
+            cid = removable[idx][1]
+            self._delete_clause(cid)
+
+    def _delete_clause(self, cid: int) -> None:
+        """Mark a learned clause as dead: clear its literals so the
+        propagation loop treats it as a 0-length clause (and it will
+        be filtered out of watch lists naturally as a stale entry)."""
+        c = self.inst.clauses[cid]
+        # Remove from watch lists
+        if len(c.lits) >= 1:
+            lit1 = c.lits[c.w1]
+            wl = self.watch_list.get(lit1)
+            if wl is not None:
+                try: wl.remove(cid)
+                except ValueError: pass
+        if len(c.lits) >= 2:
+            lit2 = c.lits[c.w2]
+            wl = self.watch_list.get(lit2)
+            if wl is not None:
+                try: wl.remove(cid)
+                except ValueError: pass
+        # Hollow out the clause
+        c.lits = []
+        c.w1 = 0
+        c.w2 = 0
+        self.alive_learned.discard(cid)
+        self.clause_activity.pop(cid, None)
+        # Clear any reason references pointing to this clause
+        for v in self.inst.vars:
+            if self.reasons.get(v) == cid:
+                self.reasons[v] = None
 
     def get_level(self, literal: int) -> int:
         v = abs(literal)
@@ -307,7 +392,10 @@ class SATSolver:
             reason_cid = self.reasons[v]
             if reason_cid is None:
                 continue
-            
+
+            ## Bump clause activity: this reason clause was useful in analysis.
+            self.bump_clause_activity(reason_cid)
+
             # Resolve: remove this variable, add other literals from reason clause
             del learned[v]
             
@@ -350,6 +438,7 @@ class SATSolver:
                 self.bump_activity(abs(lit))
         ## VSIDS decay: make older bumps worth less relative to future ones.
         self.decay_activity()
+        self.decay_clause_activity()
 
         return learned_clause, backjump_level
 
@@ -387,6 +476,9 @@ class SATSolver:
         n_orig_clauses = sum(1 for c in self.inst.clauses if not c.learned)
         n_vars = len(self.inst.vars)
         density = n_orig_clauses / max(1, n_vars)
+
+        ## Set the learned clause limit for reduce_db.
+        self.max_learnt = max(100, n_orig_clauses // 3)
 
         ## Gaussian-shaped random decision probability, peaked at the
         ## 3-SAT phase transition (~4.26).  Far from the transition
@@ -461,6 +553,10 @@ class SATSolver:
                     
                     cid = self.inst.add_clause(set(learned_clause), learned=True)
                     c = self.inst.clauses[cid]
+
+                    ## Register with clause activity tracking.
+                    self.clause_activity[cid] = 0.0
+                    self.alive_learned.add(cid)
                     
                     # Set up watches for the new clause
                     if len(c.lits) == 1:
@@ -468,6 +564,12 @@ class SATSolver:
                     elif len(c.lits) >= 2:
                         self.watch_list[c.lits[c.w1]].append(cid)
                         self.watch_list[c.lits[c.w2]].append(cid)
+
+                    ## If we've accumulated too many learned clauses, clean up.
+                    if len(self.alive_learned) > self.max_learnt:
+                        self.reduce_db()
+                        ## Gradually allow more clauses (MiniSat grows this over time).
+                        self.max_learnt = int(self.max_learnt * 1.1)
                     
                     # Assign the asserting literal and loop to propagate it
                     self.assign_lit(asserting_lit, reason_cid=cid)
