@@ -3,6 +3,7 @@ from collections import defaultdict, deque
 from sat_instance import SATInstance
 import random
 import math
+import heapq
 
 def negate(literal: int) -> int:
     return -literal
@@ -29,6 +30,25 @@ class SATSolver:
         ## The assignment whose implications are yet to be propagated.
         self.next_to_propagate: int  = 0
 
+        ## Tracking unassigned variables. If none, we're done, else we can use this for random decisions.
+        self.unassigned_set: Set[int] = set(vars)
+
+        ## ── Adapted from MINISATS  VSIDS (Variable State Independent Decaying Sum) Algorithm ──────────
+        ## - Every variable starts with an activity score of 0.
+        ## - Whenever a conflict occurs, the
+        ##   variables involved in the learned clause have their activity scores increased by `var_inc`.
+        ## - After every conflict, ALL activity scores are divided by a decay factor.
+        ##  Instead of touching every score, we increase `var_inc` by decay factor so that future increases are worth more.
+        self.activity: Dict[int, float] = {v: 0.0 for v in vars}
+        self.var_inc: float = 1.0 
+        self.var_decay: float = 0.95       # This is something we can tune/ experiment with. Smaller values make older conflicts 
+        # decay faster, so the solver focuses more on recent conflicts. Larger values retain more history, which could be good but
+        ## present an issue when search gets deep.
+
+        ## Max-heap ordered by activity. Negation since heapq is a min-heap by default.
+        self.var_heap: List[Tuple[float, int]] = [(0.0, v) for v in vars]
+        heapq.heapify(self.var_heap)
+
         ## Maps a literal to the list of clause IDs watching it.
         self.watch_list: Dict[int, List[int]] = defaultdict(list)
         self._init_watches()
@@ -45,6 +65,20 @@ class SATSolver:
             else:
                 self.watch_list[c.lits[c.w1]].append(cid)
                 self.watch_list[c.lits[c.w2]].append(cid)
+
+
+    ## Helper for VSIDS.
+    def bump_activity(self, var: int) -> None:
+        self.activity[var] += self.var_inc
+        # Rescale if scores get dangerously large (avoids float overflow)
+        if self.activity[var] > 1e100:
+            for v in self.activity:
+                self.activity[v] *= 1e-100
+            self.var_inc *= 1e-100
+        heapq.heappush(self.var_heap, (-self.activity[var], var))
+
+    def decay_activity(self) -> None:
+        self.var_inc /= self.var_decay
 
     def get_level(self, literal: int) -> int:
         v = abs(literal)
@@ -69,6 +103,7 @@ class SATSolver:
             return cur == val  # must be consistent
 
         self.assignments[v] = val
+        self.unassigned_set.discard(v)
 
         self.levels[v] = self.get_current_level()
         self.reasons[v] = reason_cid
@@ -95,6 +130,8 @@ class SATSolver:
             self.assignments[v] = None
             self.levels[v] = 0
             self.reasons[v] = None
+            self.unassigned_set.add(v)
+            heapq.heappush(self.var_heap, (-self.activity[v], v))
         
         # And erase history.
         self.assignment_log = self.assignment_log[:cutoff]
@@ -306,7 +343,14 @@ class SATSolver:
         else:
             learned_clause = other_lits
             backjump_level = 0
-        
+
+        ## VSIDS bump: increase activity for every variable in the learned clause.
+        if learned_clause is not None:
+            for lit in learned_clause:
+                self.bump_activity(abs(lit))
+        ## VSIDS decay: make older bumps worth less relative to future ones.
+        self.decay_activity()
+
         return learned_clause, backjump_level
 
 
@@ -354,25 +398,31 @@ class SATSolver:
         rand_prob = PEAK_PROB * math.exp(-((density - TRANSITION) ** 2) / (2.0 * SIGMA * SIGMA))
 
         while True:
-            # Check if all variables are assigned (after propagation)
-            if all(val is not None for val in self.assignments.values()):
-                # SAT - build model
-                model = {v: val for v, val in self.assignments.items() if val is not None}
-                return True, model
-            
-            unassigned = [v for v in self.inst.vars if self.assignments[v] is None]
-            if not unassigned:
+
+            if not self.unassigned_set:
                 model = {v: val for v, val in self.assignments.items() if val is not None}
                 return True, model
 
+            # If we are near a phase transition, inject some randomness.
+            ## This is sort of in line with what Serdar mentioned about how randomness
+            ## can help escape local minima in hard regions of the search space.
             if random.random() < rand_prob:
                 ## Random variable + random polarity
-                next_var = random.choice(unassigned)
+                next_var = random.choice(tuple(self.unassigned_set))
                 sign = random.choice([1, -1])
                 self.decide(sign * next_var)
             else:
-                ## Deterministic negative branching (Haim et al. / MiniSat default)
-                next_var = unassigned[0]
+                ## Else, use the VSIDS heuristic to pick the highest-activity unassigned variable.
+                next_var = None
+                while self.var_heap:
+                    neg_act, candidate = heapq.heappop(self.var_heap)
+                    if candidate in self.unassigned_set:
+                        next_var = candidate
+                        break
+                ## Fallback: if heap is exhausted but we still have unassigned variables, pick any/
+                if next_var is None:
+                    next_var = next(iter(self.unassigned_set))
+                ## Negative heuristic, as Haim et al mention is often better in practice.
                 self.decide(-1 * next_var)
 
             
