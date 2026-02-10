@@ -5,15 +5,32 @@ import random
 import math
 import heapq
 
-## TODO: Make many of the tunable things hyperparameters that can be passed in.
-## THen, we could use some kinf of tuning framework to find good values for different types of instances.  
-# For example, the Luby base unit, the VSIDS decay factor, the clause activity decay factor, 
-# the max learned clause limit before reduction, and the parameters for the density-based random decision probability could all be tuned.
 
-
+## Now these are hyperparameters we can tune and experiment with.
 class SATSolver:
-    def __init__(self, inst : SATInstance):
+    def __init__(
+        self,
+        inst: SATInstance,
+        var_decay: float = 0.95,
+        clause_decay: float = 0.999,
+        luby_base: int = 100,
+        max_learnt: Optional[int] = None,
+        max_learnt_min: int = 100,
+        max_learnt_ratio: float = 1.0 / 3.0,
+        max_learnt_growth: float = 1.1,
+        transition: float = 4.26,
+        sigma: float = 1.5,
+        peak_random_prob: float = 0.5,
+    ):
         self.inst = inst
+        self.luby_base: int = luby_base
+        self.max_learnt_fixed: Optional[int] = max_learnt
+        self.max_learnt_min: int = max_learnt_min
+        self.max_learnt_ratio: float = max_learnt_ratio
+        self.max_learnt_growth: float = max_learnt_growth
+        self.random_transition: float = transition
+        self.random_sigma: float = sigma
+        self.random_peak_prob: float = peak_random_prob
 
         vars = inst.vars
 
@@ -56,7 +73,7 @@ class SATSolver:
         ## - After every conflict, ALL activity scores are divided by a decay factor.
         ##  Instead of touching every score, we increase `var_inc` by decay factor so that future increases are worth more.
         self.var_inc: float = 1.0 
-        self.var_decay: float = 0.95       # This is something we can tune/ experiment with. Smaller values make older conflicts 
+        self.var_decay: float = var_decay       # This is something we can tune/ experiment with. Smaller values make older conflicts 
         # decay faster, so the solver focuses more on recent conflicts. Larger values retain more history, which could be good but
         ## present an issue when search gets deep.
 
@@ -70,9 +87,9 @@ class SATSolver:
         ## by activity and delete the rest.
         self.clause_activity: Dict[int, float] = {}   # cid -> activity
         self.clause_inc: float = 1.0
-        self.clause_decay: float = 0.999
+        self.clause_decay: float = clause_decay
         ## How many learned clauses before we trigger a cleanup.
-        self.max_learnt: int = 100 # This might change later.
+        self.max_learnt: int = max_learnt if max_learnt is not None else max_learnt_min
         ## Track which cids are learned and alive (not deleted).
         self.alive_learned: Set[int] = set()
 
@@ -470,7 +487,7 @@ class SATSolver:
 
 
         ## Luby restarts: budget = luby(restart_number) * base_unit
-        luby_base = 100  # base conflicts per Luby unit
+        luby_base = self.luby_base  # base conflicts per Luby unit
         restart_number = 1
         max_conflicts = self.luby(restart_number) * luby_base
         conflict_count = 0
@@ -482,16 +499,20 @@ class SATSolver:
         density = n_orig_clauses / max(1, n_vars)
 
         ## Set the learned clause limit for reduce_db.
-        self.max_learnt = max(100, n_orig_clauses // 3)
+        if self.max_learnt_fixed is not None:
+            self.max_learnt = self.max_learnt_fixed
+        else:
+            computed = int(n_orig_clauses * self.max_learnt_ratio)
+            self.max_learnt = computed if computed > self.max_learnt_min else self.max_learnt_min
 
         ## Gaussian-shaped random decision probability, peaked at the 3-SAT phase transition (~4.26).  Far from the transition
         ## instances are easier, so deterministic negative branching
         ## is fine; near it we inject randomness to escape hard regions.
         ## This is sort of in line with what Serdar mentioned about randomness in class.
-        TRANSITION = 4.26  ## Tunable : I suspect we aren't really in 3-SAT either right?
-        SIGMA = 1.5        # width of the peak
-        PEAK_PROB = 0.5    # probability of a random decision right at the transition
-        rand_prob = PEAK_PROB * math.exp(-((density - TRANSITION) ** 2) / (2.0 * SIGMA * SIGMA))
+        transition = self.random_transition
+        sigma = self.random_sigma
+        peak_prob = self.random_peak_prob
+        rand_prob = peak_prob * math.exp(-((density - transition) ** 2) / (2.0 * sigma * sigma))
 
         while True:
 
@@ -571,7 +592,7 @@ class SATSolver:
                     if len(self.alive_learned) > self.max_learnt:
                         self.reduce_db()
                         ## Gradually allow more clauses (MiniSat grows this over time).
-                        self.max_learnt = int(self.max_learnt * 1.1)
+                        self.max_learnt = int(self.max_learnt * self.max_learnt_growth)
                     
                     # Assign the asserting literal and loop to propagate it
                     self.assign_lit(asserting_lit, reason_cid=cid)
