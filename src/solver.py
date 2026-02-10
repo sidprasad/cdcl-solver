@@ -533,7 +533,7 @@ class SATSolver:
                     conflict_count = 0
                     restart_number += 1
                     max_conflicts = self.luby(restart_number) * luby_base
-                    print(f"(Restart #{restart_number}, next conflict budget: {max_conflicts})")
+                    #print(f"(Restart #{restart_number}, next conflict budget: {max_conflicts})")
                     break
                 
                 # Analyze conflict and determine backjump level
