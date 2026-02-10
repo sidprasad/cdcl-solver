@@ -5,6 +5,12 @@ import random
 import math
 import heapq
 
+## TODO: Make many of the tunable things hyperparameters that can be passed in.
+## THen, we could use some kinf of tuning framework to find good values for different types of instances.  
+# For example, the Luby base unit, the VSIDS decay factor, the clause activity decay factor, 
+# the max learned clause limit before reduction, and the parameters for the density-based random decision probability could all be tuned.
+
+
 class SATSolver:
     def __init__(self, inst : SATInstance):
         self.inst = inst
@@ -13,7 +19,7 @@ class SATSolver:
 
         ## Flat arrays indexed by variable number (1-based, slot 0 unused).
         ## This gives O(1) direct indexing instead of dict hash lookups.
-        ## MiniSat uses the same approach with int8_t[] / int[].
+        ## MiniSat uses the same approach with int8_t[].
         self.max_var: int = max(vars) if vars else 0
         n = self.max_var + 1  # array size
 
