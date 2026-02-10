@@ -36,3 +36,15 @@ Needs to have the following structure:
 ### Learnings
 - Negative heuristic for lits (a la minisat) better than positive.
 - Density heuristic could be improved. Luby gives short initial probes that geometrically grow, letting the solver escape bad search regions early while allowing long runs later.
+
+
+- Need better decision procedures than pure next. So we use VSIDS. Again, super inspired from minisat.
+- I worried that CPython compilation was a bottleneck, esp with Dicts. But since CNF variables are 1-indexed positive integers, so we can use lists of size max_var + 1 and index directly. This is basically what MINISAT does as well, they use a dict thing.
+
+| Before (dict)	| After (list)	| Encoding |
+--------------------------------------------
+assignments: Dict[int, Optional[bool]]| self.assignments: List[int]	 | 0 = unassigned, 1 = True, -1 = False |
+levels: Dict[int, int]	| levels: List[int]	| same values, direct index | 
+reasons: Dict[int, Optional[int]]| self.reasons: List[int]	|-1 = no reason |
+activity: Dict[int, float]	| self.activity: List[float]	| same values, direct index |
+

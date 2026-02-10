@@ -5,41 +5,50 @@ import random
 import math
 import heapq
 
-def negate(literal: int) -> int:
-    return -literal
-
 class SATSolver:
     def __init__(self, inst : SATInstance):
         self.inst = inst
 
         vars = inst.vars
 
-        ## We need to know if a variable is assigned or not.
-        self.assignments: Dict[int, Optional[bool]] = {v: None for v in vars}
+        ## Flat arrays indexed by variable number (1-based, slot 0 unused).
+        ## This gives O(1) direct indexing instead of dict hash lookups.
+        ## MiniSat uses the same approach with int8_t[] / int[].
+        self.max_var: int = max(vars) if vars else 0
+        n = self.max_var + 1  # array size
+
+        ## Assignment: 0 = unassigned, 1 = True, -1 = False
+        self.assignments: List[int] = [0] * n
         ## Decision level of each variable.
-        self.levels : Dict[int, int] = { v : 0 for v in vars }  
-        ## And reason for each variable, since we need to build implication graphs.
-        self.reasons : Dict[int, Optional[int]] = { v : None for v in vars }
+        self.levels: List[int] = [0] * n
+        ## Reason clause ID for each variable. -1 = no reason (decision or unassigned).
+        self.reasons: List[int] = [-1] * n
+        ## VSIDS activity scores.
+        self.activity: List[float] = [0.0] * n
 
 
         ## Needed for non-chronological backtracking.
         ## Literal assignment order.
         self.assignment_log: List[int] = []
+    
         ## Index in assignment_log where each decision level starts.
         self.level_start: List[int] = []
+        ## TODO: Could we optimize this with better data structures?  For example, instead of a list of all assigned literals, we could have a stack for each decision level.  Then backtracking just pops from the stacks.
+        ## TODO: Could level start be a heap?
+
         ## The assignment whose implications are yet to be propagated.
         self.next_to_propagate: int  = 0
 
         ## Tracking unassigned variables. If none, we're done, else we can use this for random decisions.
         self.unassigned_set: Set[int] = set(vars)
 
-        ## ── Adapted from MINISATS  VSIDS (Variable State Independent Decaying Sum) Algorithm ──────────
+        ## Adapted from MINISATS Variable State Independent Decaying Sum Algorithm.
+        ## Activity scores are in self.activity[] (flat array above).
         ## - Every variable starts with an activity score of 0.
         ## - Whenever a conflict occurs, the
         ##   variables involved in the learned clause have their activity scores increased by `var_inc`.
         ## - After every conflict, ALL activity scores are divided by a decay factor.
         ##  Instead of touching every score, we increase `var_inc` by decay factor so that future increases are worth more.
-        self.activity: Dict[int, float] = {v: 0.0 for v in vars}
         self.var_inc: float = 1.0 
         self.var_decay: float = 0.95       # This is something we can tune/ experiment with. Smaller values make older conflicts 
         # decay faster, so the solver focuses more on recent conflicts. Larger values retain more history, which could be good but
@@ -57,7 +66,7 @@ class SATSolver:
         self.clause_inc: float = 1.0
         self.clause_decay: float = 0.999
         ## How many learned clauses before we trigger a cleanup.
-        self.max_learnt: int = max(100, n_orig_clauses // 3) if hasattr(self, '_orig_clause_count') else 100
+        self.max_learnt: int = 100 # This might change later.
         ## Track which cids are learned and alive (not deleted).
         self.alive_learned: Set[int] = set()
 
@@ -84,8 +93,8 @@ class SATSolver:
         self.activity[var] += self.var_inc
         # Rescale if scores get dangerously large (avoids float overflow)
         if self.activity[var] > 1e100:
-            for v in self.activity:
-                self.activity[v] *= 1e-100
+            for i in range(len(self.activity)):
+                self.activity[i] *= 1e-100
             self.var_inc *= 1e-100
         heapq.heappush(self.var_heap, (-self.activity[var], var))
 
@@ -94,13 +103,11 @@ class SATSolver:
 
     ## Clause activity helpers to prevent 
     ## the learned clause DB from exploding in size.
-
-    
     def bump_clause_activity(self, cid: int) -> None:
-        """Bump a learned clause's activity when it was a reason clause for a resolved var)."""
         if cid not in self.clause_activity:
             return
         self.clause_activity[cid] += self.clause_inc
+        # Same rescaling idea as variable activity to avoid float overflow.
         if self.clause_activity[cid] > 1e100:
             for c in self.clause_activity:
                 self.clause_activity[c] *= 1e-100
@@ -111,18 +118,19 @@ class SATSolver:
         ## Saves a small increment of time since its O(1) instead of O(num learned clauses).
         self.clause_inc /= self.clause_decay
 
+
+    # When the number of learned clauses gets too large, 
+    # we delete some to save memory and speed up propagation.
+    # THis is also something MINISat does.
     def reduce_db(self) -> None:
-        """Delete roughly half of the learned clauses — keep the ones
-        with the highest activity.  Locked clauses (currently used as a
-        reason for a propagated variable) are never deleted."""
         if not self.alive_learned:
             return
 
         # Determine which cids are locked (reason for a current assignment)
         locked: Set[int] = set()
         for v in self.inst.vars:
-            r = self.reasons.get(v)
-            if r is not None and r in self.alive_learned:
+            r = self.reasons[v]
+            if r != -1 and r in self.alive_learned:
                 locked.add(r)
 
         # Sort removable learned clauses by activity (ascending)
@@ -130,16 +138,13 @@ class SATSolver:
                      for cid in self.alive_learned if cid not in locked]
         removable.sort()
 
-        # Delete the bottom half
+        # Keep only half of the removable clauses.
         n_to_delete = len(removable) // 2
         for idx in range(n_to_delete):
             cid = removable[idx][1]
-            self._delete_clause(cid)
+            self.delete_clause(cid)
 
-    def _delete_clause(self, cid: int) -> None:
-        """Mark a learned clause as dead: clear its literals so the
-        propagation loop treats it as a 0-length clause (and it will
-        be filtered out of watch lists naturally as a stale entry)."""
+    def delete_clause(self, cid: int) -> None:
         c = self.inst.clauses[cid]
         # Remove from watch lists
         if len(c.lits) >= 1:
@@ -162,8 +167,8 @@ class SATSolver:
         self.clause_activity.pop(cid, None)
         # Clear any reason references pointing to this clause
         for v in self.inst.vars:
-            if self.reasons.get(v) == cid:
-                self.reasons[v] = None
+            if self.reasons[v] == cid:
+                self.reasons[v] = -1
 
     def get_level(self, literal: int) -> int:
         v = abs(literal)
@@ -172,26 +177,30 @@ class SATSolver:
     def get_lit_value(self, literal: int) -> Optional[bool]:
         v = abs(literal)
         val = self.assignments[v]
-        if val is None:
-            # Unassigned
-            return None
-        return val if literal > 0 else (not val)
+        if val == 0:
+            return None  # unassigned
+        # val is 1 (True) or -1 (False) for the variable;
+        # for a negative literal, flip it.
+        if literal > 0:
+            return val == 1
+        else:
+            return val == -1
     
     def get_current_level(self) -> int:
         return len(self.level_start)
 
     def assign_lit(self, lit: int, reason_cid: Optional[int]) -> bool:
         v = abs(lit)
-        val = (lit > 0)
+        val = 1 if lit > 0 else -1
         cur = self.assignments[v]
-        if cur is not None:
+        if cur != 0:
             return cur == val  # must be consistent
 
         self.assignments[v] = val
         self.unassigned_set.discard(v)
 
         self.levels[v] = self.get_current_level()
-        self.reasons[v] = reason_cid
+        self.reasons[v] = reason_cid if reason_cid is not None else -1
         self.assignment_log.append(lit)
 
         return True
@@ -205,16 +214,14 @@ class SATSolver:
     def backjump(self, level: int) -> None:
         if level < 0 or level > len(self.level_start):
             raise ValueError("Cannot backjump to level {}".format(level))
-
-
         cutoff = self.level_start[level] if level < len(self.level_start) else len(self.assignment_log)
 
         # Reset everythign above the cutoff.
         for lit in self.assignment_log[cutoff:]:
             v = abs(lit)
-            self.assignments[v] = None
+            self.assignments[v] = 0
             self.levels[v] = 0
-            self.reasons[v] = None
+            self.reasons[v] = -1
             self.unassigned_set.add(v)
             heapq.heappush(self.var_heap, (-self.activity[v], v))
         
@@ -236,10 +243,9 @@ class SATSolver:
             literal = self.assignment_log[self.next_to_propagate]
             self.next_to_propagate += 1
 
-            neg_literal = negate(literal)
+            neg_literal = -literal
 
-            ## In-place filtering: read pointer (i) advances over every entry,
-            ## write pointer (j) only advances for entries we keep.
+            ## In-place filtering: read pointer (i) advances over every entry, write pointer (j) only advances for entries we keep.
             ## Entries that move their watch to another literal are dropped
             ## implicitly (j doesn't advance), so no remove() or `in` check needed.
             wl = self.watch_list[neg_literal]
@@ -277,7 +283,7 @@ class SATSolver:
                     elif l2 == neg_literal:
                         other_idx = c.w1
                     else:
-                        # Stale — drop this entry
+                        # Stale
                         continue
 
                     # Binary clause: can't move the watch, always keep it
@@ -299,7 +305,7 @@ class SATSolver:
                         watched_idx = c.w2
                         other_idx = c.w1
                     else:
-                        # Stale — drop this entry
+                        # Stale
                         continue
 
                     replaced = False
@@ -344,13 +350,8 @@ class SATSolver:
         return None   
 
 
-    ## SO I think real speedups will come from 
-    ## optimizing conflict analysis.
-
-    ## But maybe we can do better?
-    ## Vardi : k-CNF phase transition idea?
-    ## Heuristics for variable selection?
-    ## Currently, first unique implication point.
+    ## SO I think real speedups will come from optimizing conflict analysis.
+    ## We're trying with the first Unique Implication Point (UIP) in the implication graph. 
     def analyze_conflict(self, conflict_cid: int) -> Tuple[Optional[List[int]], int]:
         if len(self.level_start) == 0:
             # Conflict at level 0 - UNSAT
@@ -359,11 +360,10 @@ class SATSolver:
         current_level = self.get_current_level()
         conflict_clause = self.inst.clauses[conflict_cid]
         
-        # Use a dict to map variable -> literal (preserves which polarity we have)
-        # This avoids mixing variables and literals
-        learned: Dict[int, int] = {}  # var -> lit
+        ## Prevents conflation between variables and lits.
+        learned: Dict[int, int] = {}
         for lit in conflict_clause.lits:
-            v = abs(lit)
+            v = abs(lit)         
             learned[v] = lit
         
         # Count literals at current decision level
@@ -390,7 +390,7 @@ class SATSolver:
             
             # Can only resolve on implied literals (not decisions)
             reason_cid = self.reasons[v]
-            if reason_cid is None:
+            if reason_cid == -1:
                 continue
 
             ## Bump clause activity: this reason clause was useful in analysis.
@@ -432,11 +432,11 @@ class SATSolver:
             learned_clause = other_lits
             backjump_level = 0
 
-        ## VSIDS bump: increase activity for every variable in the learned clause.
+        ## VSIDS: increase activity for every variable in the learned clause.
         if learned_clause is not None:
             for lit in learned_clause:
                 self.bump_activity(abs(lit))
-        ## VSIDS decay: make older bumps worth less relative to future ones.
+        ## VSIDS: make older increments worth less relative to future ones.
         self.decay_activity()
         self.decay_clause_activity()
 
@@ -444,8 +444,7 @@ class SATSolver:
 
 
 
-    ## Luby restart sequence: 1,1,2,1,1,2,4,1,1,2,1,1,2,4,8,...
-    ## Optimal for Las Vegas algorithms (Luby, Sinclair & Zuckerman 1993).
+    ## Luby restart sequence (Luby, Sinclair & Zuckerman 1993).
     @staticmethod
     def luby(i: int) -> int:
         # Find the largest power of 2 <= i+1
@@ -455,7 +454,6 @@ class SATSolver:
         if k == i + 1:
             return k
         return SATSolver.luby(i - k + 1)
-
 
 
     def solve(self) -> Tuple[bool, Optional[Dict[int, bool]]]:
@@ -480,8 +478,7 @@ class SATSolver:
         ## Set the learned clause limit for reduce_db.
         self.max_learnt = max(100, n_orig_clauses // 3)
 
-        ## Gaussian-shaped random decision probability, peaked at the
-        ## 3-SAT phase transition (~4.26).  Far from the transition
+        ## Gaussian-shaped random decision probability, peaked at the 3-SAT phase transition (~4.26).  Far from the transition
         ## instances are easier, so deterministic negative branching
         ## is fine; near it we inject randomness to escape hard regions.
         TRANSITION = 4.26
@@ -492,7 +489,7 @@ class SATSolver:
         while True:
 
             if not self.unassigned_set:
-                model = {v: val for v, val in self.assignments.items() if val is not None}
+                model = {v: (self.assignments[v] == 1) for v in self.inst.vars}
                 return True, model
 
             # If we are near a phase transition, inject some randomness.
@@ -511,7 +508,7 @@ class SATSolver:
                     if candidate in self.unassigned_set:
                         next_var = candidate
                         break
-                ## Fallback: if heap is exhausted but we still have unassigned variables, pick any/
+                ## Fallback: if heap is exhausted but we still have unassigned variables, pick any
                 if next_var is None:
                     next_var = next(iter(self.unassigned_set))
                 ## Negative heuristic, as Haim et al mention is often better in practice.
