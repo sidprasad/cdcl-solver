@@ -487,7 +487,8 @@ class SATSolver:
         ## Gaussian-shaped random decision probability, peaked at the 3-SAT phase transition (~4.26).  Far from the transition
         ## instances are easier, so deterministic negative branching
         ## is fine; near it we inject randomness to escape hard regions.
-        TRANSITION = 4.26
+        ## This is sort of in line with what Serdar mentioned about randomness in class.
+        TRANSITION = 4.26.  ## Tunable : I suspect we aren't really in 3-SAT either right?
         SIGMA = 1.5        # width of the peak
         PEAK_PROB = 0.5    # probability of a random decision right at the transition
         rand_prob = PEAK_PROB * math.exp(-((density - TRANSITION) ** 2) / (2.0 * SIGMA * SIGMA))
@@ -499,8 +500,6 @@ class SATSolver:
                 return True, model
 
             # If we are near a phase transition, inject some randomness.
-            ## This is sort of in line with what Serdar mentioned about how randomness
-            ## can help escape local minima in hard regions of the search space.
             if random.random() < rand_prob:
                 ## Random variable + random polarity
                 next_var = random.choice(tuple(self.unassigned_set))
