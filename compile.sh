@@ -26,10 +26,7 @@ rm -rf src/build
 #
 # See src/setup.py for the full flag list and directive config.
 cd src
-../venv/bin/python setup.py build_ext --inplace 2>&1 || {
-    echo "Optimised build failed, falling back to basic cythonize"
-    ../venv/bin/cythonize -i solver.py sat_instance.py dimacs_parser.py 2>/dev/null || echo "Cython compilation skipped"
-}
+../venv/bin/python setup.py build_ext --inplace 2>&1
 # Clean up distutils build dir (the .so files are already in src/)
 rm -rf build
 cd ..

@@ -14,7 +14,7 @@ class SATSolver:
         var_decay: float = 0.95,
         clause_decay: float = 0.999,
         luby_base: int = 100,
-        max_learnt: Optional[int] = None,
+        max_learnt: int = -1,
         max_learnt_min: int = 100,
         max_learnt_ratio: float = 1.0 / 3.0,
         max_learnt_growth: float = 1.1,
@@ -24,7 +24,7 @@ class SATSolver:
     ):
         self.inst = inst
         self.luby_base: int = luby_base
-        self.max_learnt_fixed: Optional[int] = max_learnt
+        self.max_learnt_fixed: int = max_learnt
         self.max_learnt_min: int = max_learnt_min
         self.max_learnt_ratio: float = max_learnt_ratio
         self.max_learnt_growth: float = max_learnt_growth
@@ -89,7 +89,7 @@ class SATSolver:
         self.clause_inc: float = 1.0
         self.clause_decay: float = clause_decay
         ## How many learned clauses before we trigger a cleanup.
-        self.max_learnt: int = max_learnt if max_learnt is not None else max_learnt_min
+        self.max_learnt: int = max_learnt if max_learnt >= 0 else max_learnt_min
         ## Track which cids are learned and alive (not deleted).
         self.alive_learned: Set[int] = set()
 
@@ -197,17 +197,16 @@ class SATSolver:
         v = abs(literal)
         return self.levels[v]
     
-    def get_lit_value(self, literal: int) -> Optional[bool]:
+    def get_lit_value(self, literal: int) -> int:
+        """Return 1 (satisfied), -1 (falsified), or 0 (unassigned)."""
         v = abs(literal)
         val = self.assignments[v]
-        if val == 0:
-            return None  # unassigned
-        # val is 1 (True) or -1 (False) for the variable;
-        # for a negative literal, flip it.
+        # val is 1 (True) or -1 (False) for the variable, 0 unassigned.
+        # For a negative literal, flip the sign.
         if literal > 0:
-            return val == 1
+            return val
         else:
-            return val == -1
+            return -val
     
     def get_current_level(self) -> int:
         return len(self.level_start)
@@ -291,9 +290,9 @@ class SATSolver:
                     wl[j] = cid; j += 1
                     l = c.lits[0]
                     val = self.get_lit_value(l)
-                    if val is False:
+                    if val < 0:
                         conflict_cid = cid; break
-                    elif val is None:
+                    elif val == 0:
                         if not self.assign_lit(l, reason_cid=cid):
                             conflict_cid = cid; break
                     continue
@@ -313,9 +312,9 @@ class SATSolver:
                     wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
                     other_val = self.get_lit_value(other_lit)
-                    if other_val is False:
+                    if other_val < 0:
                         conflict_cid = cid; break
-                    elif other_val is None:
+                    elif other_val == 0:
                         if not self.assign_lit(other_lit, reason_cid=cid):
                             conflict_cid = cid; break
                     continue
@@ -336,7 +335,7 @@ class SATSolver:
                         if k == other_idx:
                             continue
                         val2 = self.get_lit_value(lit2)
-                        if val2 is True or val2 is None:
+                        if val2 >= 0:
                             # Move the watch to lit2
                             if watched_idx == c.w1:
                                 c.w1 = k
@@ -354,9 +353,9 @@ class SATSolver:
                     wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
                     other_val = self.get_lit_value(other_lit)
-                    if other_val is False:
+                    if other_val < 0:
                         conflict_cid = cid; break
-                    if other_val is None:
+                    if other_val == 0:
                         if not self.assign_lit(other_lit, reason_cid=cid):
                             conflict_cid = cid; break
                     continue
@@ -499,7 +498,7 @@ class SATSolver:
         density = n_orig_clauses / max(1, n_vars)
 
         ## Set the learned clause limit for reduce_db.
-        if self.max_learnt_fixed is not None:
+        if self.max_learnt_fixed >= 0:
             self.max_learnt = self.max_learnt_fixed
         else:
             computed = int(n_orig_clauses * self.max_learnt_ratio)

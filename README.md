@@ -39,6 +39,10 @@ Needs to have the following structure:
 
 
 - Need better decision procedures than pure next. So we use VSIDS. Again, super inspired from minisat.
+
+
+## Now, less interesting optimizations for Cython compilation / Minisat inspo
+
 - I worried that CPython compilation was a bottleneck, esp with Dicts. But since CNF variables are 1-indexed positive integers, so we can use lists of size max_var + 1 and index directly. This is basically what MINISAT does as well, they use a dict thing.
 
 | Before (dict)	| After (list)	| Encoding |
@@ -47,3 +51,13 @@ assignments: Dict[int, Optional[bool]]| self.assignments: List[int]	 | 0 = unass
 levels: Dict[int, int]	| levels: List[int]	| same values, direct index | 
 reasons: Dict[int, Optional[int]]| self.reasons: List[int]	|-1 = no reason, Any non-negative integer → the cid of the clause that forced it |
 activity: Dict[int, float]	| self.activity: List[float]	| same values, direct index |
+
+
+Similarly, for Cython infrastructure, I then started moving from Option[...] to using raw ints.
+
+For example, in propagate, there's no reason to deal with Option[bool]. INstead:
+
+- False  < 0
+- True  > 0
+- Unassigned / None  == 0
+- So then checks like is True or is Unassigned can just be simple compilations.
