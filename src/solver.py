@@ -488,7 +488,7 @@ class SATSolver:
         ## instances are easier, so deterministic negative branching
         ## is fine; near it we inject randomness to escape hard regions.
         ## This is sort of in line with what Serdar mentioned about randomness in class.
-        TRANSITION = 4.26.  ## Tunable : I suspect we aren't really in 3-SAT either right?
+        TRANSITION = 4.26  ## Tunable : I suspect we aren't really in 3-SAT either right?
         SIGMA = 1.5        # width of the peak
         PEAK_PROB = 0.5    # probability of a random decision right at the transition
         rand_prob = PEAK_PROB * math.exp(-((density - TRANSITION) ** 2) / (2.0 * SIGMA * SIGMA))
