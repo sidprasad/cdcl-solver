@@ -1,7 +1,8 @@
 from typing import Set, List, Dict, Optional, Tuple
 from collections import defaultdict, deque
 from sat_instance import SATInstance
-
+import random
+import math
 
 def negate(literal: int) -> int:
     return -literal
@@ -310,17 +311,17 @@ class SATSolver:
 
 
 
-    ## Naive restart strat -- look at clause density?
-    ## Higher density -> more conflicts -> lower budget
-    def restart_budget_from_density(self, m: int, n: int,
-                               base: int = 1000,
-                               d0: float = 4.26, ## 3 SAT budget
-                               min_budget: int = 50,
-                               max_budget: int = 5000) -> int:
-        d = m / max(n, 1)
-        # inverse scaling around d0
-        budget = int(base * (d0 / max(d, 1e-9)))
-        return max(min_budget, min(max_budget, budget))
+    ## Luby restart sequence: 1,1,2,1,1,2,4,1,1,2,1,1,2,4,8,...
+    ## Optimal for Las Vegas algorithms (Luby, Sinclair & Zuckerman 1993).
+    @staticmethod
+    def luby(i: int) -> int:
+        # Find the largest power of 2 <= i+1
+        k = 1
+        while k * 2 <= i + 1:
+            k *= 2
+        if k == i + 1:
+            return k
+        return SATSolver.luby(i - k + 1)
 
 
 
@@ -331,13 +332,26 @@ class SATSolver:
             return False, None  # unsat
 
 
-        ## TODO: Could we tune restarts based on clause density?
-        m0 = len(self.inst.clauses)
-        n  = len(self.inst.vars)
-
-        ## This is from 
-        max_conflicts = self.restart_budget_from_density(m0, n)
+        ## Luby restarts: budget = luby(restart_number) * base_unit
+        luby_base = 100  # base conflicts per Luby unit
+        restart_number = 1
+        max_conflicts = self.luby(restart_number) * luby_base
         conflict_count = 0
+
+        ## Density-based randomness: use ORIGINAL clause count so learned
+        ## clauses don't inflate the density over time.
+        n_orig_clauses = sum(1 for c in self.inst.clauses if not c.learned)
+        n_vars = len(self.inst.vars)
+        density = n_orig_clauses / max(1, n_vars)
+
+        ## Gaussian-shaped random decision probability, peaked at the
+        ## 3-SAT phase transition (~4.26).  Far from the transition
+        ## instances are easier, so deterministic negative branching
+        ## is fine; near it we inject randomness to escape hard regions.
+        TRANSITION = 4.26
+        SIGMA = 1.5        # width of the peak
+        PEAK_PROB = 0.5    # probability of a random decision right at the transition
+        rand_prob = PEAK_PROB * math.exp(-((density - TRANSITION) ** 2) / (2.0 * SIGMA * SIGMA))
 
         while True:
             # Check if all variables are assigned (after propagation)
@@ -345,26 +359,22 @@ class SATSolver:
                 # SAT - build model
                 model = {v: val for v, val in self.assignments.items() if val is not None}
                 return True, model
-
-            # Pick next unassigned variable (simple heuristic: first unassigned)
-            next_var = None
-            for v in self.inst.vars:
-                if self.assignments[v] is None:
-                    next_var = v
-                    break
             
-            if next_var is None:
-                # All assigned but we didn't catch it above - shouldn't happen
+            unassigned = [v for v in self.inst.vars if self.assignments[v] is None]
+            if not unassigned:
                 model = {v: val for v, val in self.assignments.items() if val is not None}
                 return True, model
 
-            # Make decision (try positive literal first)
-            ## From Haim et Al:
-            #             The direction heuristics in MiniSAT are very minimalistic: It uses negative branching: i.e. the decision variable is always assigned to false.
-            # Although it might seem a bit arbitrary, it is not. Two properties of this heuristic contribute the fast performance. First, it consequently chooses the same sign. Therefore it
-            # keeps searching in the same search space. Second, always branching on false is much
-            # better than always branching on true.
-            self.decide(-1 * next_var)
+            if random.random() < rand_prob:
+                ## Random variable + random polarity
+                next_var = random.choice(unassigned)
+                sign = random.choice([1, -1])
+                self.decide(sign * next_var)
+            else:
+                ## Deterministic negative branching (Haim et al. / MiniSat default)
+                next_var = unassigned[0]
+                self.decide(-1 * next_var)
+
             
             # Propagate and handle conflicts
             while True:
@@ -375,10 +385,13 @@ class SATSolver:
                 
                 conflict_count += 1
                 
-                # Restart if too many conflicts
-                if conflict_count > max_conflicts:
+                # Luby restart
+                if conflict_count >= max_conflicts:
                     self.backjump(0)
                     conflict_count = 0
+                    restart_number += 1
+                    max_conflicts = self.luby(restart_number) * luby_base
+                    print(f"(Restart #{restart_number}, next conflict budget: {max_conflicts})")
                     break
                 
                 # Analyze conflict and determine backjump level

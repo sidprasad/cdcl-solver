@@ -32,3 +32,7 @@ Needs to have the following structure:
 |_ report.pdf
 |_ team.txt
 ```
+
+### Learnings
+- Negative heuristic for lits (a la minisat) better than positive.
+- Density heuristic could be improved. Luby gives short initial probes that geometrically grow, letting the solver escape bad search regions early while allowing long runs later.
