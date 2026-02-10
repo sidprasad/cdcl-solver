@@ -1,0 +1,388 @@
+from typing import Set, List, Dict, Optional, Tuple
+from collections import defaultdict, deque
+from sat_instance import SATInstance
+
+
+def negate(literal: int) -> int:
+    return -literal
+
+class SATSolver:
+    def __init__(self, inst : SATInstance):
+        self.inst = inst
+
+        vars = inst.vars
+
+        ## We need to know if a variable is assigned or not.
+        self.assignments: Dict[int, Optional[bool]] = {v: None for v in vars}
+        ## Decision level of each variable.
+        self.levels : Dict[int, int] = { v : 0 for v in vars }  
+        ## And reason for each variable, since we need to build implication graphs.
+        self.reasons : Dict[int, Optional[int]] = { v : None for v in vars }
+
+
+        ## Needed for non-chronological backtracking.
+        ## Literal assignment order.
+        self.assignment_log: List[int] = []
+        ## Index in assignment_log where each decision level starts.
+        self.level_start: List[int] = []
+        ## The assignment whose implications are yet to be propagated.
+        self.next_to_propagate: int  = 0
+
+        ## Maps a literal to the list of clause IDs watching it.
+        self.watch_list: Dict[int, List[int]] = defaultdict(list)
+        self._init_watches()
+
+    def _init_watches(self) -> None:
+        for cid, c in enumerate(self.inst.clauses):
+            if len(c.lits) == 0:
+                continue
+
+            if len(c.lits) == 1:
+                ## Dont need to append twice here, since 
+                ## our propagation logic will handle it.
+                self.watch_list[c.lits[0]].append(cid)
+            else:
+                self.watch_list[c.lits[c.w1]].append(cid)
+                self.watch_list[c.lits[c.w2]].append(cid)
+
+    def get_level(self, literal: int) -> int:
+        v = abs(literal)
+        return self.levels[v]
+    
+    def get_lit_value(self, literal: int) -> Optional[bool]:
+        v = abs(literal)
+        val = self.assignments[v]
+        if val is None:
+            # Unassigned
+            return None
+        return val if literal > 0 else (not val)
+    
+    def get_current_level(self) -> int:
+        return len(self.level_start)
+
+    def assign_lit(self, lit: int, reason_cid: Optional[int]) -> bool:
+        v = abs(lit)
+        val = (lit > 0)
+        cur = self.assignments[v]
+        if cur is not None:
+            return cur == val  # must be consistent
+
+        self.assignments[v] = val
+
+        self.levels[v] = self.get_current_level()
+        self.reasons[v] = reason_cid
+        self.assignment_log.append(lit)
+
+        return True
+
+    # New decision level
+    def decide(self, lit: int) -> bool:
+
+        self.level_start.append(len(self.assignment_log))
+        return self.assign_lit(lit, reason_cid=None)
+
+    def backjump(self, level: int) -> None:
+        if level < 0 or level > len(self.level_start):
+            raise ValueError("Cannot backjump to level {}".format(level))
+
+
+        cutoff = self.level_start[level] if level < len(self.level_start) else len(self.assignment_log)
+
+        # Reset everythign above the cutoff.
+        for lit in self.assignment_log[cutoff:]:
+            v = abs(lit)
+            self.assignments[v] = None
+            self.levels[v] = 0
+            self.reasons[v] = None
+        
+        # And erase history.
+        self.assignment_log = self.assignment_log[:cutoff]
+        self.level_start = self.level_start[:level]
+        self.next_to_propagate = min(self.next_to_propagate, len(self.assignment_log))
+
+
+
+        
+    # Now unit propagation with watched literals
+    # Returns the conflicting clause ID, or None if no conflict.
+    def propagate(self) -> Optional[int]:
+        ## This is the complex part.
+        ## Unlike DPLL, we look at clauses watching the negation of the assigned literal.
+
+        while self.next_to_propagate < len(self.assignment_log):
+            literal = self.assignment_log[self.next_to_propagate]
+            self.next_to_propagate += 1
+
+            neg_literal = negate(literal)
+
+            ## We dont want to modify the watch list while iterating over it,
+            ## since we may be adding new clauses.
+            watch_clauses = list(self.watch_list[neg_literal])
+            for cid in watch_clauses:
+                c = self.inst.clauses[cid]
+                num_lits = len(c.lits)
+
+                if num_lits == 0:
+                    return cid
+                elif num_lits == 1:
+                    # Unit clause, and the two watches are the same.
+                    l = c.lits[0]
+                    val = self.get_lit_value(l)
+                    if val is False:
+                        return cid  # conflict
+                    elif val is None:
+                        if not self.assign_lit(l, reason_cid=cid):
+                            return cid  # conflict
+                    # else satisfied, do nothing
+                    continue
+                elif num_lits == 2:
+                    l1 = c.lits[c.w1]
+                    l2 = c.lits[c.w2]
+
+
+                    if l1 == neg_literal:
+                        watched_idx = c.w1
+                        other_idx = c.w2
+                    elif l2 == neg_literal:
+                        watched_idx = c.w2
+                        other_idx = c.w1
+                    else:
+                        # Something is stale.
+                        continue
+                    other_lit = c.lits[other_idx]
+                    other_val = self.get_lit_value(other_lit)
+
+                    if other_val is False:
+                        return cid  # conflict
+                    elif other_val is None:
+                        if not self.assign_lit(other_lit, reason_cid=cid):
+                            return cid  # conflict
+                    # else satisfied, do nothing
+                    continue
+                else:
+                    # General case (>=3 literals): try to find a replacement watch
+                    if c.lits[c.w1] == neg_literal:
+                        watched_idx = c.w1
+                        other_idx = c.w2
+                    elif c.lits[c.w2] == neg_literal:
+                        watched_idx = c.w2
+                        other_idx = c.w1
+                    else:
+                        # Stale entry: clause no longer actually watches this negated literal
+                        continue
+
+                    replaced = False
+                    # Try to find a lit to watch (other than the other watched literal)
+                    for j, lit2 in enumerate(c.lits):
+                        if j == other_idx:
+                            continue
+                        val2 = self.get_lit_value(lit2)
+                        if val2 is True or val2 is None:
+                            # Move the watch to j
+                            if watched_idx == c.w1:
+                                c.w1 = j
+                            else:
+                                c.w2 = j
+                            if cid not in self.watch_list[lit2]:
+                                self.watch_list[lit2].append(cid)
+                            if cid in self.watch_list[neg_literal]:
+                                self.watch_list[neg_literal].remove(cid)
+                            replaced = True
+                            break
+
+                    if replaced:
+                        continue
+
+                    # No replacement found: clause is either unit or conflict under current assignment
+                    other_lit = c.lits[other_idx]
+                    other_val = self.get_lit_value(other_lit)
+                    if other_val is False:
+                        return cid
+                    if other_val is None:
+                        if not self.assign_lit(other_lit, reason_cid=cid):
+                            return cid
+                    continue
+        return None   
+
+
+    ## SO I think real speedups will come from 
+    ## optimizing conflict analysis.
+
+    ## But maybe we can do better?
+    ## Vardi : k-CNF phase transition idea?
+    ## Heuristics for variable selection?
+    ## Currently, first unique implication point.
+    def analyze_conflict(self, conflict_cid: int) -> Tuple[Optional[List[int]], int]:
+        if len(self.level_start) == 0:
+            # Conflict at level 0 - UNSAT
+            return None, -1
+        
+        current_level = self.get_current_level()
+        conflict_clause = self.inst.clauses[conflict_cid]
+        
+        # Use a dict to map variable -> literal (preserves which polarity we have)
+        # This avoids mixing variables and literals
+        learned: Dict[int, int] = {}  # var -> lit
+        for lit in conflict_clause.lits:
+            v = abs(lit)
+            learned[v] = lit
+        
+        # Count literals at current decision level
+        def count_at_current_level() -> int:
+            return sum(1 for v in learned if self.levels[v] == current_level)
+        
+        current_level_count = count_at_current_level()
+        
+        # Walk backwards through assignment log to resolve to first UIP
+        i = len(self.assignment_log) - 1
+        while current_level_count > 1 and i >= 0:
+            # Get the assigned literal (the one that became true)
+            assigned_lit = self.assignment_log[i]
+            i -= 1
+            v = abs(assigned_lit)
+            
+            # Check if this variable is in our learned clause
+            if v not in learned:
+                continue
+            
+            # The literal in learned clause must be the negation of assigned_lit
+            # (since all literals in a conflict clause are false)
+            lit_in_learned = learned[v]
+            
+            # Can only resolve on implied literals (not decisions)
+            reason_cid = self.reasons[v]
+            if reason_cid is None:
+                continue
+            
+            # Resolve: remove this variable, add other literals from reason clause
+            del learned[v]
+            
+            reason_clause = self.inst.clauses[reason_cid]
+            for reason_lit in reason_clause.lits:
+                rv = abs(reason_lit)
+                if rv != v and rv not in learned:
+                    learned[rv] = reason_lit
+            
+            current_level_count = count_at_current_level()
+        
+        if not learned:
+            return None, -1
+        
+        # Build learned clause with asserting literal first
+        # The asserting literal is the one at current_level (should be exactly one)
+        asserting_lit = None
+        other_lits: List[int] = []
+        backjump_level = 0
+        
+        for v, lit in learned.items():
+            level = self.levels[v]
+            if level == current_level:
+                asserting_lit = lit
+            else:
+                other_lits.append(lit)
+                if level > backjump_level:
+                    backjump_level = level
+        
+        # Put asserting literal first in the learned clause
+        if asserting_lit is not None:
+            learned_clause = [asserting_lit] + other_lits
+        else:
+            learned_clause = other_lits
+            backjump_level = 0
+        
+        return learned_clause, backjump_level
+
+
+
+    ## Naive restart strat -- look at clause density?
+    ## Higher density -> more conflicts -> lower budget
+    def restart_budget_from_density(self, m: int, n: int,
+                               base: int = 1000,
+                               d0: float = 4.26, ## 3 SAT budget
+                               min_budget: int = 50,
+                               max_budget: int = 5000) -> int:
+        d = m / max(n, 1)
+        # inverse scaling around d0
+        budget = int(base * (d0 / max(d, 1e-9)))
+        return max(min_budget, min(max_budget, budget))
+
+
+
+    def solve(self) -> Tuple[bool, Optional[Dict[int, bool]]]:
+        # Initial propagation at level 0
+        conflict = self.propagate()
+        if conflict is not None:
+            return False, None  # unsat
+
+
+        ## COuld we tune restarts based on clause density?
+        m0 = len(self.inst.clauses)
+        n  = len(self.inst.vars)
+        max_conflicts = self.restart_budget_from_density(m0, n)
+        conflict_count = 0
+
+        while True:
+            # Check if all variables are assigned (after propagation)
+            if all(val is not None for val in self.assignments.values()):
+                # SAT - build model
+                model = {v: val for v, val in self.assignments.items() if val is not None}
+                return True, model
+
+            # Pick next unassigned variable (simple heuristic: first unassigned)
+            next_var = None
+            for v in self.inst.vars:
+                if self.assignments[v] is None:
+                    next_var = v
+                    break
+            
+            if next_var is None:
+                # All assigned but we didn't catch it above - shouldn't happen
+                model = {v: val for v, val in self.assignments.items() if val is not None}
+                return True, model
+
+            # Make decision (try positive literal first)
+            self.decide(next_var)
+            
+            # Propagate and handle conflicts
+            while True:
+                conflict = self.propagate()
+                
+                if conflict is None:
+                    break  # No conflict, continue to next decision
+                
+                conflict_count += 1
+                
+                # Restart if too many conflicts
+                if conflict_count > max_conflicts:
+                    self.backjump(0)
+                    conflict_count = 0
+                    break
+                
+                # Analyze conflict and determine backjump level
+                learned_clause, backjump_level = self.analyze_conflict(conflict)
+                
+                if backjump_level < 0:
+                    # UNSAT
+                    return False, None
+                
+                # Non-chronological backjump
+                self.backjump(backjump_level)
+                
+                # Add learned clause and set up watches
+                if learned_clause is not None and len(learned_clause) > 0:
+                    # Asserting literal is first in the clause
+                    asserting_lit = learned_clause[0]
+                    
+                    cid = self.inst.add_clause(set(learned_clause), learned=True)
+                    c = self.inst.clauses[cid]
+                    
+                    # Set up watches for the new clause
+                    if len(c.lits) == 1:
+                        self.watch_list[c.lits[0]].append(cid)
+                    elif len(c.lits) >= 2:
+                        self.watch_list[c.lits[c.w1]].append(cid)
+                        self.watch_list[c.lits[c.w2]].append(cid)
+                    
+                    # Assign the asserting literal and loop to propagate it
+                    self.assign_lit(asserting_lit, reason_cid=cid)
+                    # Continue the inner while loop to propagate
