@@ -359,7 +359,12 @@ class SATSolver:
                 return True, model
 
             # Make decision (try positive literal first)
-            self.decide(next_var)
+            ## From Haim et Al:
+            #             The direction heuristics in MiniSAT are very minimalistic: It uses negative branching: i.e. the decision variable is always assigned to false.
+            # Although it might seem a bit arbitrary, it is not. Two properties of this heuristic contribute the fast performance. First, it consequently chooses the same sign. Therefore it
+            # keeps searching in the same search space. Second, always branching on false is much
+            # better than always branching on true.
+            self.decide(-1 * next_var)
             
             # Propagate and handle conflicts
             while True:
