@@ -47,4 +47,3 @@ assignments: Dict[int, Optional[bool]]| self.assignments: List[int]	 | 0 = unass
 levels: Dict[int, int]	| levels: List[int]	| same values, direct index | 
 reasons: Dict[int, Optional[int]]| self.reasons: List[int]	|-1 = no reason, Any non-negative integer → the cid of the clause that forced it |
 activity: Dict[int, float]	| self.activity: List[float]	| same values, direct index |
-
