@@ -1,6 +1,10 @@
 from dataclasses import dataclass, field
 from typing import List, Set
 
+
+## Modified this slightly from the 
+## stencil to add a Clause dataclass, etc.
+
 @dataclass
 class Clause:
     # Using a list, since watched literals care about order.

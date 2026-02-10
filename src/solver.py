@@ -115,49 +115,57 @@ class SATSolver:
 
             neg_literal = negate(literal)
 
-            ## We dont want to modify the watch list while iterating over it,
-            ## since we may be adding new clauses.
-            watch_clauses = list(self.watch_list[neg_literal])
-            for cid in watch_clauses:
+            ## In-place filtering: read pointer (i) advances over every entry,
+            ## write pointer (j) only advances for entries we keep.
+            ## Entries that move their watch to another literal are dropped
+            ## implicitly (j doesn't advance), so no remove() or `in` check needed.
+            wl = self.watch_list[neg_literal]
+            i = 0
+            j = 0
+            conflict_cid = None
+            while i < len(wl):
+                cid = wl[i]
+                i += 1
                 c = self.inst.clauses[cid]
                 num_lits = len(c.lits)
 
                 if num_lits == 0:
-                    return cid
+                    # Keep remaining entries and report conflict
+                    wl[j] = cid; j += 1
+                    conflict_cid = cid
+                    break
                 elif num_lits == 1:
-                    # Unit clause, and the two watches are the same.
+                    # Unit clause — keep watching, try to propagate
+                    wl[j] = cid; j += 1
                     l = c.lits[0]
                     val = self.get_lit_value(l)
                     if val is False:
-                        return cid  # conflict
+                        conflict_cid = cid; break
                     elif val is None:
                         if not self.assign_lit(l, reason_cid=cid):
-                            return cid  # conflict
-                    # else satisfied, do nothing
+                            conflict_cid = cid; break
                     continue
                 elif num_lits == 2:
                     l1 = c.lits[c.w1]
                     l2 = c.lits[c.w2]
 
-
                     if l1 == neg_literal:
-                        watched_idx = c.w1
                         other_idx = c.w2
                     elif l2 == neg_literal:
-                        watched_idx = c.w2
                         other_idx = c.w1
                     else:
-                        # Something is stale.
+                        # Stale — drop this entry
                         continue
+
+                    # Binary clause: can't move the watch, always keep it
+                    wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
                     other_val = self.get_lit_value(other_lit)
-
                     if other_val is False:
-                        return cid  # conflict
+                        conflict_cid = cid; break
                     elif other_val is None:
                         if not self.assign_lit(other_lit, reason_cid=cid):
-                            return cid  # conflict
-                    # else satisfied, do nothing
+                            conflict_cid = cid; break
                     continue
                 else:
                     # General case (>=3 literals): try to find a replacement watch
@@ -168,40 +176,48 @@ class SATSolver:
                         watched_idx = c.w2
                         other_idx = c.w1
                     else:
-                        # Stale entry: clause no longer actually watches this negated literal
+                        # Stale — drop this entry
                         continue
 
                     replaced = False
-                    # Try to find a lit to watch (other than the other watched literal)
-                    for j, lit2 in enumerate(c.lits):
-                        if j == other_idx:
+                    for k, lit2 in enumerate(c.lits):
+                        if k == other_idx:
                             continue
                         val2 = self.get_lit_value(lit2)
                         if val2 is True or val2 is None:
-                            # Move the watch to j
+                            # Move the watch to lit2
                             if watched_idx == c.w1:
-                                c.w1 = j
+                                c.w1 = k
                             else:
-                                c.w2 = j
-                            if cid not in self.watch_list[lit2]:
-                                self.watch_list[lit2].append(cid)
-                            if cid in self.watch_list[neg_literal]:
-                                self.watch_list[neg_literal].remove(cid)
+                                c.w2 = k
+                            self.watch_list[lit2].append(cid)
+                            # Don't copy cid to wl[j] — effectively removed
                             replaced = True
                             break
 
                     if replaced:
                         continue
 
-                    # No replacement found: clause is either unit or conflict under current assignment
+                    # No replacement — keep watching, propagate or conflict
+                    wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
                     other_val = self.get_lit_value(other_lit)
                     if other_val is False:
-                        return cid
+                        conflict_cid = cid; break
                     if other_val is None:
                         if not self.assign_lit(other_lit, reason_cid=cid):
-                            return cid
+                            conflict_cid = cid; break
                     continue
+
+            # On early exit (conflict), copy remaining entries we haven't looked at
+            while i < len(wl):
+                wl[j] = wl[i]
+                i += 1; j += 1
+            # Truncate the list to the write pointer
+            del wl[j:]
+
+            if conflict_cid is not None:
+                return conflict_cid
         return None   
 
 
@@ -315,9 +331,11 @@ class SATSolver:
             return False, None  # unsat
 
 
-        ## COuld we tune restarts based on clause density?
+        ## TODO: Could we tune restarts based on clause density?
         m0 = len(self.inst.clauses)
         n  = len(self.inst.vars)
+
+        ## This is from 
         max_conflicts = self.restart_budget_from_density(m0, n)
         conflict_count = 0
 
