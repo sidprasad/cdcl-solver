@@ -256,8 +256,11 @@ class SATSolver:
         ## This is the complex part.
         ## Unlike DPLL, we look at clauses watching the negation of the assigned literal.
 
-        while self.next_to_propagate < len(self.assignment_log):
-            literal = self.assignment_log[self.next_to_propagate]
+        ## Cache list ref as local — avoids self.assignment_log attr lookup every iteration.
+        ## len() on the same list object still reflects appends from assign_lit.
+        assignment_log = self.assignment_log
+        while self.next_to_propagate < len(assignment_log):
+            literal = assignment_log[self.next_to_propagate]
             self.next_to_propagate += 1
 
             neg_literal = -literal
@@ -379,15 +382,14 @@ class SATSolver:
         
         ## Prevents conflation between variables and lits.
         learned: Dict[int, int] = {}
+        ## Running counter of literals at the current decision level.
+        current_level_count = 0
+        levels = self.levels  # local ref to avoid repeated attr lookup (again, this is a boring mechanical thing.)
         for lit in conflict_clause.lits:
             v = abs(lit)         
             learned[v] = lit
-        
-        # Count literals at current decision level
-        def count_at_current_level() -> int:
-            return sum(1 for v in learned if self.levels[v] == current_level)
-        
-        current_level_count = count_at_current_level()
+            if levels[v] == current_level:
+                current_level_count += 1
         
         # Walk backwards through assignment log to resolve to first UIP
         i = len(self.assignment_log) - 1
@@ -403,7 +405,7 @@ class SATSolver:
             
             # The literal in learned clause must be the negation of assigned_lit
             # (since all literals in a conflict clause are false)
-            lit_in_learned = learned[v]
+            #lit_in_learned = learned[v]
             
             # Can only resolve on implied literals (not decisions)
             reason_cid = self.reasons[v]
@@ -415,14 +417,16 @@ class SATSolver:
 
             # Resolve: remove this variable, add other literals from reason clause
             del learned[v]
+            ## v is at current_level (we're walking backwards through it), so decrement.
+            current_level_count -= 1
             
             reason_clause = self.inst.clauses[reason_cid]
             for reason_lit in reason_clause.lits:
                 rv = abs(reason_lit)
                 if rv != v and rv not in learned:
                     learned[rv] = reason_lit
-            
-            current_level_count = count_at_current_level()
+                    if levels[rv] == current_level:
+                        current_level_count += 1
         
         if not learned:
             return [], -1
@@ -462,9 +466,26 @@ class SATSolver:
 
 
     ## Luby restart sequence (Luby, Sinclair & Zuckerman 1993).
+    ## Precomputed table avoids recursive calls on every restart.
+    @staticmethod
+    def _build_luby_table(size: int) -> List[int]:
+        table: List[int] = [0] * (size + 1)
+        for i in range(1, size + 1):
+            k = 1
+            while k * 2 <= i + 1:
+                k *= 2
+            if k == i + 1:
+                table[i] = k
+            else:
+                table[i] = table[i - k + 1]
+        return table
+
+    _LUBY_TABLE: List[int] = _build_luby_table.__func__(1000)
+
     @staticmethod
     def luby(i: int) -> int:
-        # Find the largest power of 2 <= i+1
+        if i <= 1000:
+            return SATSolver._LUBY_TABLE[i]
         k = 1
         while k * 2 <= i + 1:
             k *= 2

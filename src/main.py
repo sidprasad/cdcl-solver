@@ -49,6 +49,7 @@ def main(args):
                 ## formulas (Eén & Sörensson, MiniSat tech report).
                 ## Longer Luby runs let propagation exploit structure
                 ## before restarting (Luby et al. 1993).
+                print(f"Low-density instance (density={density:.2f}), using long-term VSIDS and longer restarts")
                 solver = SATSolver(
                     instance,
                     var_decay=0.99,
@@ -61,6 +62,7 @@ def main(args):
             elif density <= 30.0:
                 ## Medium-density — near or above 3-SAT phase transition.
                 ## Default MiniSat-style settings work well here.
+                print(f"Medium-density instance (density={density:.2f}), using default MiniSat-style parameters")
                 solver = SATSolver(
                     instance,
                     var_decay=0.95,
@@ -79,6 +81,7 @@ def main(args):
                 ## random_freq provides diversification to avoid plateaus.
                 ## Aggressive learned-clause cleanup prevents memory blowup
                 ## when clauses/var ratio is enormous.
+                print(f"High-density instance (density={density:.2f}), using fast VSIDS decay and rapid restarts")
                 solver = SATSolver(
                     instance,
                     var_decay=0.85,
@@ -92,7 +95,6 @@ def main(args):
             sat, model = solver.solve()
             if sat:
                 result = "SAT"
-                # format solution as: "1 true 2 false"
                 if model is not None:
                     solution = " ".join(f"{v} {'true' if val else 'false'}" for v, val in sorted(model.items()))
             else:
