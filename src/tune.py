@@ -26,18 +26,6 @@ from dimacs_parser import DimacsParser
 from model_timer import Timer
 
 
-# Default benchmark instances (small-medium ones for faster tuning)
-DEFAULT_INSTANCES = [
-    "input/C1065_064.cnf",
-    "input/C1065_082.cnf",
-    "input/C1597_024.cnf",
-    "input/C1597_060.cnf",
-    "input/C200_1806.cnf",
-    "input/U50_1065_038.cnf",
-    "input/U75_1597_024.cnf",
-]
-
-
 def solve_with_timeout(instance_path: str, params: dict, timeout: float) -> Optional[float]:
     """
     Solve a single instance with given hyperparameters.
@@ -148,21 +136,26 @@ def objective(trial: optuna.Trial, instances: List[str], timeout: float) -> floa
 
 def main():
     parser = ArgumentParser(description="Tune SAT solver hyperparameters with Optuna")
-    parser.add_argument("--n-trials", type=int, default=100, help="Number of Optuna trials")
-    parser.add_argument("--timeout", type=float, default=60.0, help="Per-instance timeout (seconds)")
+    parser.add_argument("--n-trials", type=int, default=10, help="Number of Optuna trials")
+    parser.add_argument("--timeout", type=float, default=300.0, help="Per-instance timeout (seconds)")
     parser.add_argument("--study-name", type=str, default="sat_solver_tuning", help="Optuna study name")
     parser.add_argument("--storage", type=str, default=None, help="Optuna storage URL (e.g., sqlite:///optuna.db)")
     parser.add_argument("--instances", type=str, nargs="+", default=None, help="Instance files to tune on")
+    parser.add_argument("--train-ratio", type=float, default=0.5, help="Fraction of instances for training (default: 0.5)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for train/test split")
     parser.add_argument("--dashboard", action="store_true", help="Launch Optuna dashboard after tuning")
     parser.add_argument("--load-study", action="store_true", help="Load existing study instead of creating new")
     args = parser.parse_args()
     
     # Resolve instance paths
     project_root = Path(__file__).parent.parent
+    input_dir = project_root / "input"
+    
     if args.instances:
         instances = [str(project_root / p) for p in args.instances]
     else:
-        instances = [str(project_root / p) for p in DEFAULT_INSTANCES]
+        # Auto-discover all .cnf files in input/
+        instances = sorted([str(p) for p in input_dir.glob("*.cnf")])
     
     # Verify instances exist
     for inst in instances:
@@ -174,8 +167,29 @@ def main():
         print("Error: No valid instances found!")
         return
     
-    print(f"Tuning on {len(instances)} instances with {args.timeout}s timeout each")
+    # Train/test split
+    import random as rand_module
+    rand_module.seed(args.seed)
+    shuffled = instances.copy()
+    rand_module.shuffle(shuffled)
+    
+    split_idx = int(len(shuffled) * args.train_ratio)
+    train_instances = shuffled[:split_idx]
+    test_instances = shuffled[split_idx:]
+    
+    print(f"Found {len(instances)} total instances")
+    print(f"Train set: {len(train_instances)} instances ({args.train_ratio*100:.0f}%)")
+    print(f"Test set:  {len(test_instances)} instances ({(1-args.train_ratio)*100:.0f}%)")
+    print(f"Timeout: {args.timeout}s per instance")
     print(f"Running {args.n_trials} trials...")
+    print()
+    
+    print("Train instances:")
+    for inst in train_instances:
+        print(f"  - {Path(inst).name}")
+    print("\nTest instances:")
+    for inst in test_instances:
+        print(f"  - {Path(inst).name}")
     print()
     
     # Create or load study
@@ -193,9 +207,9 @@ def main():
             pruner=optuna.pruners.MedianPruner(),
         )
     
-    # Run optimization
+    # Run optimization on train set
     study.optimize(
-        lambda trial: objective(trial, instances, args.timeout),
+        lambda trial: objective(trial, train_instances, args.timeout),
         n_trials=args.n_trials,
         show_progress_bar=True,
     )
@@ -205,10 +219,18 @@ def main():
     print("TUNING COMPLETE")
     print("=" * 60)
     print(f"\nBest trial: #{study.best_trial.number}")
-    print(f"Best score: {study.best_value:.2f}s (total solve time)")
+    print(f"Best score (train): {study.best_value:.2f}s (total solve time)")
     print("\nBest hyperparameters:")
     for key, value in study.best_params.items():
         print(f"  {key}: {value}")
+    
+    # Evaluate on test set
+    if test_instances:
+        print("\n" + "-" * 60)
+        print("Evaluating best params on TEST set...")
+        print("-" * 60)
+        test_score = evaluate_params(study.best_params, test_instances, args.timeout)
+        print(f"Test score: {test_score:.2f}s (total solve time on {len(test_instances)} instances)")
     
     # Generate code snippet
     print("\n" + "-" * 60)

@@ -25,7 +25,70 @@ def main(args):
         instance = DimacsParser.parse_cnf_file(input_file)
         if instance:
             from solver import SATSolver
-            solver = SATSolver(instance)
+
+            ## ── Instance-adaptive hyperparameters ──────────────────
+            ## Classify by clause/variable density and choose config.
+            ## Idea from SATzilla / AutoFolio portfolio-solver approach
+            ## (Xu et al. 2008, Lindauer et al. 2015) — lightweight
+            ## version using density as the single discriminating feature.
+            ##
+            ## Density thresholds informed by:
+            ##  - 3-SAT phase transition at ~4.26 (Vardi et al.)
+            ##  - picoSAT rapid-restart insight for dense instances
+            ##    (Biere, SAT 2008)
+            ##  - MiniSat defaults for structured / low-density instances
+            ##    (Eén & Sörensson, SAT 2003)
+            n_vars = len(instance.vars)
+            n_clauses = len(instance.clauses)
+            density = n_clauses / n_vars if n_vars > 0 else 0.0
+
+            if density <= 6.0:
+                ## Low-density / large structured instances.
+                ## Long VSIDS memory (var_decay~0.99) keeps focus on the
+                ## same region of the search space — good for structured
+                ## formulas (Eén & Sörensson, MiniSat tech report).
+                ## Longer Luby runs let propagation exploit structure
+                ## before restarting (Luby et al. 1993).
+                solver = SATSolver(
+                    instance,
+                    var_decay=0.99,
+                    clause_decay=0.999,
+                    luby_base=512,
+                    random_freq=0.005,
+                    max_learnt_ratio=0.5,
+                    max_learnt_growth=1.05,
+                )
+            elif density <= 30.0:
+                ## Medium-density — near or above 3-SAT phase transition.
+                ## Default MiniSat-style settings work well here.
+                solver = SATSolver(
+                    instance,
+                    var_decay=0.95,
+                    clause_decay=0.999,
+                    luby_base=100,
+                    random_freq=0.02,
+                    max_learnt_ratio=1.0 / 3.0,
+                    max_learnt_growth=1.1,
+                )
+            else:
+                ## High-density — massively constrained.
+                ## Fast VSIDS decay (0.85) forgets old conflicts quickly,
+                ## avoiding commitment to stale search directions (picoSAT
+                ## design rationale, Biere 2008). Rapid restarts (luby_base
+                ## 32) let the solver escape bad regions early. Higher
+                ## random_freq provides diversification to avoid plateaus.
+                ## Aggressive learned-clause cleanup prevents memory blowup
+                ## when clauses/var ratio is enormous.
+                solver = SATSolver(
+                    instance,
+                    var_decay=0.85,
+                    clause_decay=0.9995,
+                    luby_base=32,
+                    random_freq=0.08,
+                    max_learnt_ratio=0.15,
+                    max_learnt_growth=1.2,
+                )
+
             sat, model = solver.solve()
             if sat:
                 result = "SAT"

@@ -1,4 +1,4 @@
-from typing import Set, List, Dict, Optional, Tuple
+from typing import Set, List, Dict, Optional, Tuple  # Optional kept for solve() return type
 from collections import defaultdict, deque
 from sat_instance import SATInstance
 import random
@@ -206,7 +206,7 @@ class SATSolver:
     def get_current_level(self) -> int:
         return len(self.level_start)
 
-    def assign_lit(self, lit: int, reason_cid: Optional[int]) -> bool:
+    def assign_lit(self, lit: int, reason_cid: int) -> bool:
         v = abs(lit)
         val = 1 if lit > 0 else -1
         cur = self.assignments[v]
@@ -217,7 +217,7 @@ class SATSolver:
         self.unassigned_set.discard(v)
 
         self.levels[v] = self.get_current_level()
-        self.reasons[v] = reason_cid if reason_cid is not None else -1
+        self.reasons[v] = reason_cid
         self.assignment_log.append(lit)
 
         return True
@@ -226,7 +226,7 @@ class SATSolver:
     def decide(self, lit: int) -> bool:
 
         self.level_start.append(len(self.assignment_log))
-        return self.assign_lit(lit, reason_cid=None)
+        return self.assign_lit(lit, reason_cid=-1)
 
     def backjump(self, level: int) -> None:
         if level < 0 or level > len(self.level_start):
@@ -251,8 +251,8 @@ class SATSolver:
 
         
     # Now unit propagation with watched literals
-    # Returns the conflicting clause ID, or None if no conflict.
-    def propagate(self) -> Optional[int]:
+    # Returns the conflicting clause ID, or -1 if no conflict.
+    def propagate(self) -> int:
         ## This is the complex part.
         ## Unlike DPLL, we look at clauses watching the negation of the assigned literal.
 
@@ -268,7 +268,7 @@ class SATSolver:
             wl = self.watch_list[neg_literal]
             i = 0
             j = 0
-            conflict_cid = None
+            conflict_cid = -1
             while i < len(wl):
                 cid = wl[i]
                 i += 1
@@ -362,17 +362,17 @@ class SATSolver:
             # Truncate the list to the write pointer
             del wl[j:]
 
-            if conflict_cid is not None:
+            if conflict_cid >= 0:
                 return conflict_cid
-        return None   
+        return -1   
 
 
     ## SO I think real speedups will come from optimizing conflict analysis.
     ## We're trying with the first Unique Implication Point (UIP) in the implication graph. 
-    def analyze_conflict(self, conflict_cid: int) -> Tuple[Optional[List[int]], int]:
+    def analyze_conflict(self, conflict_cid: int) -> Tuple[List[int], int]:
         if len(self.level_start) == 0:
             # Conflict at level 0 - UNSAT
-            return None, -1
+            return [], -1
         
         current_level = self.get_current_level()
         conflict_clause = self.inst.clauses[conflict_cid]
@@ -425,7 +425,7 @@ class SATSolver:
             current_level_count = count_at_current_level()
         
         if not learned:
-            return None, -1
+            return [], -1
         
         # Build learned clause with asserting literal first
         # The asserting literal is the one at current_level (should be exactly one)
@@ -476,7 +476,7 @@ class SATSolver:
     def solve(self) -> Tuple[bool, Optional[Dict[int, bool]]]:
         # Initial propagation at level 0
         conflict = self.propagate()
-        if conflict is not None:
+        if conflict >= 0:
             return False, None  # unsat
 
 
@@ -535,7 +535,7 @@ class SATSolver:
             while True:
                 conflict = self.propagate()
                 
-                if conflict is None:
+                if conflict < 0:
                     break  # No conflict, continue to next decision
                 
                 conflict_count += 1
@@ -560,7 +560,7 @@ class SATSolver:
                 self.backjump(backjump_level)
                 
                 # Add learned clause and set up watches
-                if learned_clause is not None and len(learned_clause) > 0:
+                if len(learned_clause) > 0:
                     # Asserting literal is first in the clause
                     asserting_lit = learned_clause[0]
                     

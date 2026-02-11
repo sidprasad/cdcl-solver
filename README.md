@@ -74,6 +74,29 @@ Needs to have the following structure:
 - Need better decision procedures than pure next. So we use VSIDS. Again, super inspired from minisat.
 
 
+## Instance-Adaptive Hyperparameters
+
+Instead of one fixed configuration, the solver classifies instances by their
+clause-to-variable density at startup and selects a tuned parameter profile.
+This is a zero-runtime-cost optimisation — classification is a single division
+before the solve loop.
+
+**Density clusters and rationale:**
+
+| Cluster | Density | `var_decay` | `luby_base` | `random_freq` | `max_learnt_ratio` |
+|---|---|---|---|---|---|
+| Low (≤ 6) | Structured, large | 0.99 | 512 | 0.005 | 0.50 |
+| Medium (6–30) | Phase-transition region | 0.95 | 100 | 0.02 | 0.33 |
+| High (> 30) | Massively constrained | 0.85 | 32 | 0.08 | 0.15 |
+
+**Sources / inspiration:**
+
+- **Portfolio approach**: Xu, Hutter, Hoos & Leyton-Brown, "SATzilla: Portfolio-based Algorithm Selection for SAT" (JAIR, 2008). Uses instance features to pick the right solver; we apply the same idea within a single solver by switching hyperparameters.
+- **Phase transition**: Vardi et al. The 3-SAT phase transition at density ~4.26 sits inside our low-density cluster; medium starts above it.
+- **High-density / rapid restarts**: Dense, hard instances benefit from very frequent restarts.
+- **Random diversification**: Higher `random_freq` for dense instances.
+
+
 ## Now, less interesting optimizations for Cython compilation / Minisat inspo
 
 - I worried that CPython compilation was a bottleneck, esp with Dicts. But since CNF variables are 1-indexed positive integers, so we can use lists of size max_var + 1 and index directly. This is basically what MINISAT does as well, they use a dict thing.
