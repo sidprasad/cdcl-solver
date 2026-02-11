@@ -44,7 +44,6 @@ class SATSolver:
         ## VSIDS activity scores.
         self.activity: List[float] = [0.0] * n
 
-
         ## Needed for non-chronological backtracking.
         ## Literal assignment order.
         self.assignment_log: List[int] = []
@@ -548,8 +547,11 @@ class SATSolver:
                 ## Fallback: if heap is exhausted but we still have unassigned variables, pick any
                 if next_var is None:
                     next_var = next(iter(self.unassigned_set))
-                ## Negative heuristic, as Haim et al mention is often better in practice.
-                self.decide(-1 * next_var)
+                ## Always-negative polarity (MiniSat 1.0 heuristic).
+                ## Phase saving hurt UNSAT instances badly — the solver
+                ## kept returning to the same failing region instead of
+                ## exploring widely to prove unsatisfiability.
+                self.decide(-next_var)
 
             
             # Propagate and handle conflicts
