@@ -39,6 +39,34 @@ Needs to have the following structure:
 ```
 
 ### Learnings
+
+#### Input Instance Densities
+
+| Instance | Variables | Clauses | Density (clauses/vars) |
+|---|---|---|---|
+| C1065_064.cnf | 50 | 1065 | 21.30 |
+| C1065_082.cnf | 50 | 1065 | 21.30 |
+| C140.cnf | 1841 | 6306 | 3.43 |
+| C1597_024.cnf | 75 | 1597 | 21.29 |
+| C1597_060.cnf | 75 | 1597 | 21.29 |
+| C1597_081.cnf | 75 | 1597 | 21.29 |
+| C168_128.cnf | 1698 | 5425 | 3.19 |
+| C175_145.cnf | 175 | 14577 | 83.30 |
+| C181_3151.cnf | 181 | 3151 | 17.41 |
+| C200_1806.cnf | 200 | 1806 | 9.03 |
+| C208_120.cnf | 1608 | 5278 | 3.28 |
+| C208_3254.cnf | 1876 | 7334 | 3.91 |
+| C210_30.cnf | 1789 | 7426 | 4.15 |
+| C210_55.cnf | 1755 | 5781 | 3.29 |
+| C243_188.cnf | 24356 | 1884008 | 77.35 |
+| C289_179.cnf | 28902 | 179895 | 6.22 |
+| C459_4675.cnf | 459 | 4675 | 10.19 |
+| C53_895.cnf | 5356 | 89506 | 16.71 |
+| U50_1065_038.cnf | 50 | 1065 | 21.30 |
+| U50_1065_045.cnf | 50 | 1065 | 21.30 |
+| U50_4450_035.cnf | 50 | 4450 | 89.00 |
+| U75_1597_024.cnf | 75 | 1597 | 21.29 |
+
 - Negative heuristic for lits (a la minisat) better than positive.
 - Density heuristic could be improved. Luby gives short initial probes that geometrically grow, letting the solver escape bad search regions early while allowing long runs later.
 
