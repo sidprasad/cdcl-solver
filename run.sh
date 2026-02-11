@@ -12,7 +12,12 @@ fi
 	
 input=$1
 
-if [ -f "venv/bin/python3" ]; then
+# Prefer the venv's python executable. Some venvs may have python -> python3
+# which can point outside the venv; check `venv/bin/python` first then fall
+# back to `venv/bin/python3`.
+if [ -x "venv/bin/python" ]; then
+    PYTHON="venv/bin/python"
+elif [ -x "venv/bin/python3" ]; then
     PYTHON="venv/bin/python3"
 else
     echo "Error: Run ./compile.sh first"

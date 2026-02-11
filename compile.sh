@@ -8,8 +8,8 @@
 if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
-
-# Install requirements into the virtual environment
+# Ensure venv has an up-to-date pip, setuptools and wheel, then install requirements
+./venv/bin/python -m pip install --upgrade pip setuptools wheel
 ./venv/bin/pip install -r requirements.txt
 
 # Clean old build artifacts so we always get a fresh compile
