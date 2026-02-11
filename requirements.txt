@@ -1,2 +1,4 @@
 numpy
 cython
+optuna
+plotly  # for optuna visualizations
