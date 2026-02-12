@@ -117,3 +117,6 @@ For example, in propagate, there's no reason to deal with Option[bool]. INstead:
 - True  > 0
 - Unassigned / None  == 0
 - So then checks like is True or is Unassigned can just be simple compilations.
+
+
+- Next, inlining some function calls (e.g. `get_lit_value`)

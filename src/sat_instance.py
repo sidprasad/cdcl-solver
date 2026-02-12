@@ -37,8 +37,7 @@ class SATInstance:
     def add_variable(self, literal: int):
         self.vars.add(abs(literal))
 
-    def add_clause(self, clause: Set[int], learned: bool = False) -> int:    
-        lits = list(clause)
+    def add_clause(self, lits: List[int], learned: bool = False) -> int:    
         for l in lits:
             self.add_variable(l)
 

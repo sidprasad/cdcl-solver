@@ -56,7 +56,7 @@ class DimacsParser:
                 if token == '0':
                     # End of clause
                     if current_clause: # Avoid empty clauses if 0 is standalone or repeated
-                        sat_instance.add_clause(current_clause)
+                        sat_instance.add_clause(list(current_clause))
                     current_clause = set()
                 elif token == '%':
                     # End of file marker

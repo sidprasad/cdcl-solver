@@ -115,9 +115,6 @@ class SATSolver:
             self.var_inc *= 1e-100
         heapq.heappush(self.var_heap, (-self.activity[var], var))
 
-    def decay_activity(self) -> None:
-        self.var_inc /= self.var_decay
-
     ## Clause activity helpers to prevent 
     ## the learned clause DB from exploding in size.
     def bump_clause_activity(self, cid: int) -> None:
@@ -129,11 +126,6 @@ class SATSolver:
             for c in self.clause_activity:
                 self.clause_activity[c] *= 1e-100
             self.clause_inc *= 1e-100
-
-    def decay_clause_activity(self) -> None:
-        ## Same idea as VSIDS: inflate the increment instead of shrinking every score.
-        ## Saves a small increment of time since its O(1) instead of O(num learned clauses).
-        self.clause_inc /= self.clause_decay
 
 
     # When the number of learned clauses gets too large, 
@@ -157,40 +149,25 @@ class SATSolver:
 
         # Keep only half of the removable clauses.
         n_to_delete = len(removable) // 2
+        clauses = self.inst.clauses
+        cact = self.clause_activity
+        deleted_cids = set()
         for idx in range(n_to_delete):
             cid = removable[idx][1]
-            self.delete_clause(cid)
+            c = clauses[cid]
+            c.lits = []
+            c.w1 = 0
+            c.w2 = 0
+            deleted_cids.add(cid)
+            del cact[cid]
+        # Bulk set subtraction — faster than N individual discards
+        self.alive_learned -= deleted_cids
 
-    def delete_clause(self, cid: int) -> None:
-        c = self.inst.clauses[cid]
-        # Remove from watch lists
-        if len(c.lits) >= 1:
-            lit1 = c.lits[c.w1]
-            wl = self.watch_list.get(lit1)
-            if wl is not None:
-                try: wl.remove(cid)
-                except ValueError: pass
-        if len(c.lits) >= 2:
-            lit2 = c.lits[c.w2]
-            wl = self.watch_list.get(lit2)
-            if wl is not None:
-                try: wl.remove(cid)
-                except ValueError: pass
-        # Hollow out the clause
-        c.lits = []
-        c.w1 = 0
-        c.w2 = 0
-        self.alive_learned.discard(cid)
-        self.clause_activity.pop(cid, None)
-        # Clear any reason references pointing to this clause
-        for v in self.inst.vars:
-            if self.reasons[v] == cid:
-                self.reasons[v] = -1
-
-    def get_level(self, literal: int) -> int:
-        v = abs(literal)
-        return self.levels[v]
+    # def get_level(self, literal: int) -> int:
+    #     v = abs(literal)
+    #     return self.levels[v]
     
+
     def get_lit_value(self, literal: int) -> int:
         """Return 1 (satisfied), -1 (falsified), or 0 (unassigned)."""
         v = abs(literal)
@@ -258,6 +235,7 @@ class SATSolver:
         ## Cache list ref as local — avoids self.assignment_log attr lookup every iteration.
         ## len() on the same list object still reflects appends from assign_lit.
         assignment_log = self.assignment_log
+        assignments = self.assignments  # local ref — avoids self lookup in inner loop
         while self.next_to_propagate < len(assignment_log):
             literal = assignment_log[self.next_to_propagate]
             self.next_to_propagate += 1
@@ -278,15 +256,14 @@ class SATSolver:
                 num_lits = len(c.lits)
 
                 if num_lits == 0:
-                    # Keep remaining entries and report conflict
-                    wl[j] = cid; j += 1
-                    conflict_cid = cid
-                    break
+                    # Deleted clause — drop from watch list (don't copy to wl[j])
+                    continue
                 elif num_lits == 1:
                     # Unit clause — keep watching, try to propagate
                     wl[j] = cid; j += 1
                     l = c.lits[0]
-                    val = self.get_lit_value(l)
+                    _v = abs(l); _a = assignments[_v]
+                    val = _a if l > 0 else -_a
                     if val < 0:
                         conflict_cid = cid; break
                     elif val == 0:
@@ -308,7 +285,8 @@ class SATSolver:
                     # Binary clause: can't move the watch, always keep it
                     wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
-                    other_val = self.get_lit_value(other_lit)
+                    _v = abs(other_lit); _a = assignments[_v]
+                    other_val = _a if other_lit > 0 else -_a
                     if other_val < 0:
                         conflict_cid = cid; break
                     elif other_val == 0:
@@ -331,7 +309,8 @@ class SATSolver:
                     for k, lit2 in enumerate(c.lits):
                         if k == other_idx:
                             continue
-                        val2 = self.get_lit_value(lit2)
+                        _v2 = abs(lit2); _a2 = assignments[_v2]
+                        val2 = _a2 if lit2 > 0 else -_a2
                         if val2 >= 0:
                             # Move the watch to lit2
                             if watched_idx == c.w1:
@@ -349,7 +328,8 @@ class SATSolver:
                     # No replacement — keep watching, propagate or conflict
                     wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
-                    other_val = self.get_lit_value(other_lit)
+                    _v = abs(other_lit); _a = assignments[_v]
+                    other_val = _a if other_lit > 0 else -_a
                     if other_val < 0:
                         conflict_cid = cid; break
                     if other_val == 0:
@@ -457,8 +437,11 @@ class SATSolver:
             for lit in learned_clause:
                 self.bump_activity(abs(lit))
         ## VSIDS: make older increments worth less relative to future ones.
-        self.decay_activity()
-        self.decay_clause_activity()
+        self.var_inc /= self.var_decay
+        
+        ## Same idea as VSIDS: inflate the increment instead of shrinking every score.
+        ## Saves a small increment of time since its O(1) instead of O(num learned clauses).
+        self.clause_inc /= self.clause_decay
 
         return learned_clause, backjump_level
 
@@ -509,7 +492,7 @@ class SATSolver:
         ## Clause counts for learned-clause limit.
         n_orig_clauses = sum(1 for c in self.inst.clauses if not c.learned)
 
-        ## Set the learned clause limit for reduce_db.
+        ## Set the learned clause limit for cleaning up the clause database.
         if self.max_learnt_fixed >= 0:
             self.max_learnt = self.max_learnt_fixed
         else:
@@ -517,11 +500,6 @@ class SATSolver:
             self.max_learnt = computed if computed > self.max_learnt_min else self.max_learnt_min
 
         ## Fixed random decision frequency (MiniSat-style).
-        ## The Gaussian phase-transition heuristic (peaked at 4.26) was
-        ## giving ~50% randomness to easy low-density instances that
-        ## didn't need it, and 0% to hard high-density ones that did.
-        ## A small constant ensures every instance gets occasional
-        ## diversity to escape search plateaus.
         rand_prob = self.random_freq
 
         while True:
@@ -587,7 +565,7 @@ class SATSolver:
                     # Asserting literal is first in the clause
                     asserting_lit = learned_clause[0]
                     
-                    cid = self.inst.add_clause(set(learned_clause), learned=True)
+                    cid = self.inst.add_clause(learned_clause, learned=True)
                     c = self.inst.clauses[cid]
 
                     ## Register with clause activity tracking.
