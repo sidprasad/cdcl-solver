@@ -5,6 +5,11 @@ __pycache__/
 
 # C extensions
 *.so
+*.o
+
+# Cython / distutils build directories
+src/build/
+build/
 
 # Distribution / packaging
 .Python
