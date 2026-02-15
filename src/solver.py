@@ -3,6 +3,8 @@ from collections import defaultdict, deque
 from sat_instance import SATInstance
 import random
 import heapq
+import array
+import cython
 
 
 ## Now these are hyperparameters we can tune and experiment with.
@@ -36,13 +38,14 @@ class SATSolver:
         n = self.max_var + 1  # array size
 
         ## Assignment: 0 = unassigned, 1 = True, -1 = False
-        self.assignments: List[int] = [0] * n
+        ## array.array('i') gives Cython typed memoryview access → raw C int* indexing.
+        self.assignments = array.array('i', [0] * n)
         ## Decision level of each variable.
-        self.levels: List[int] = [0] * n
+        self.levels = array.array('i', [0] * n)
         ## Reason clause ID for each variable. -1 = no reason (decision or unassigned).
-        self.reasons: List[int] = [-1] * n
+        self.reasons = array.array('i', [-1] * n)
         ## VSIDS activity scores.
-        self.activity: List[float] = [0.0] * n
+        self.activity = array.array('d', [0.0] * n)
 
         ## Needed for non-chronological backtracking.
         ## Literal assignment order.
@@ -88,10 +91,15 @@ class SATSolver:
         self.alive_learned: Set[int] = set()
 
         ## Maps a literal to the list of clause IDs watching it.
-        self.watch_list: Dict[int, List[int]] = defaultdict(list)
+        ## Flat list indexed by (literal + max_var) eliminates dict hash lookups.
+        ## Literals range from -max_var to +max_var, so size = 2*max_var+1.
+        self._wl_off: int = self.max_var
+        self.watch_list: List[List[int]] = [[] for _ in range(2 * self.max_var + 1)]
         self._init_watches()
 
     def _init_watches(self) -> None:
+        wl_off = self._wl_off
+        watch_list = self.watch_list
         for cid, c in enumerate(self.inst.clauses):
             if len(c.lits) == 0:
                 continue
@@ -99,24 +107,29 @@ class SATSolver:
             if len(c.lits) == 1:
                 ## Dont need to append twice here, since 
                 ## our propagation logic will handle it.
-                self.watch_list[c.lits[0]].append(cid)
+                watch_list[c.lits[0] + wl_off].append(cid)
             else:
-                self.watch_list[c.lits[c.w1]].append(cid)
-                self.watch_list[c.lits[c.w2]].append(cid)
+                watch_list[c.lits[c.w1] + wl_off].append(cid)
+                watch_list[c.lits[c.w2] + wl_off].append(cid)
 
 
     ## Helper for VSIDS.
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def bump_activity(self, var: int) -> None:
-        self.activity[var] += self.var_inc
+        activity: cython.double[:] = self.activity
+        activity[var] += self.var_inc
         # Rescale if scores get dangerously large (avoids float overflow)
-        if self.activity[var] > 1e100:
+        if activity[var] > 1e100:
             for i in range(len(self.activity)):
-                self.activity[i] *= 1e-100
+                activity[i] *= 1e-100
             self.var_inc *= 1e-100
-        heapq.heappush(self.var_heap, (-self.activity[var], var))
+        heapq.heappush(self.var_heap, (-activity[var], var))
 
     ## Clause activity helpers to prevent 
     ## the learned clause DB from exploding in size.
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def bump_clause_activity(self, cid: int) -> None:
         if cid not in self.clause_activity:
             return
@@ -131,14 +144,17 @@ class SATSolver:
     # When the number of learned clauses gets too large, 
     # we delete some to save memory and speed up propagation.
     # THis is also something MINISat does.
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def reduce_db(self) -> None:
         if not self.alive_learned:
             return
 
         # Determine which cids are locked (reason for a current assignment)
+        reasons: cython.int[:] = self.reasons
         locked: Set[int] = set()
         for v in self.inst.vars:
-            r = self.reasons[v]
+            r = reasons[v]
             if r != -1 and r in self.alive_learned:
                 locked.add(r)
 
@@ -168,6 +184,8 @@ class SATSolver:
     #     return self.levels[v]
     
 
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def get_lit_value(self, literal: int) -> int:
         """Return 1 (satisfied), -1 (falsified), or 0 (unassigned)."""
         v = abs(literal)
@@ -182,18 +200,23 @@ class SATSolver:
     def get_current_level(self) -> int:
         return len(self.level_start)
 
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def assign_lit(self, lit: int, reason_cid: int) -> bool:
+        assignments: cython.int[:] = self.assignments
+        levels: cython.int[:] = self.levels
+        reasons: cython.int[:] = self.reasons
         v = abs(lit)
         val = 1 if lit > 0 else -1
-        cur = self.assignments[v]
+        cur = assignments[v]
         if cur != 0:
             return cur == val  # must be consistent
 
-        self.assignments[v] = val
+        assignments[v] = val
         self.unassigned_set.discard(v)
 
-        self.levels[v] = self.get_current_level()
-        self.reasons[v] = reason_cid
+        levels[v] = self.get_current_level()
+        reasons[v] = reason_cid
         self.assignment_log.append(lit)
 
         return True
@@ -204,19 +227,26 @@ class SATSolver:
         self.level_start.append(len(self.assignment_log))
         return self.assign_lit(lit, reason_cid=-1)
 
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def backjump(self, level: int) -> None:
         if level < 0 or level > len(self.level_start):
             raise ValueError("Cannot backjump to level {}".format(level))
         cutoff = self.level_start[level] if level < len(self.level_start) else len(self.assignment_log)
 
-        # Reset everythign above the cutoff.
+        assignments: cython.int[:] = self.assignments
+        levels: cython.int[:] = self.levels
+        reasons: cython.int[:] = self.reasons
+        activity: cython.double[:] = self.activity
+
+        # Reset everything above the cutoff.
         for lit in self.assignment_log[cutoff:]:
             v = abs(lit)
-            self.assignments[v] = 0
-            self.levels[v] = 0
-            self.reasons[v] = -1
+            assignments[v] = 0
+            levels[v] = 0
+            reasons[v] = -1
             self.unassigned_set.add(v)
-            heapq.heappush(self.var_heap, (-self.activity[v], v))
+            heapq.heappush(self.var_heap, (-activity[v], v))
         
         # And erase history.
         self.assignment_log = self.assignment_log[:cutoff]
@@ -228,6 +258,8 @@ class SATSolver:
         
     # Now unit propagation with watched literals
     # Returns the conflicting clause ID, or -1 if no conflict.
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def propagate(self) -> int:
         ## This is the complex part.
         ## Unlike DPLL, we look at clauses watching the negation of the assigned literal.
@@ -235,7 +267,10 @@ class SATSolver:
         ## Cache list ref as local — avoids self.assignment_log attr lookup every iteration.
         ## len() on the same list object still reflects appends from assign_lit.
         assignment_log = self.assignment_log
-        assignments = self.assignments  # local ref — avoids self lookup in inner loop
+        ## Typed memoryview → raw C int* indexing in inner loop.
+        assignments: cython.int[:] = self.assignments
+        wl_off = self._wl_off
+        watch_list = self.watch_list
         while self.next_to_propagate < len(assignment_log):
             literal = assignment_log[self.next_to_propagate]
             self.next_to_propagate += 1
@@ -245,7 +280,7 @@ class SATSolver:
             ## In-place filtering: read pointer (i) advances over every entry, write pointer (j) only advances for entries we keep.
             ## Entries that move their watch to another literal are dropped
             ## implicitly (j doesn't advance), so no remove() or `in` check needed.
-            wl = self.watch_list[neg_literal]
+            wl = watch_list[neg_literal + wl_off]
             i = 0
             j = 0
             conflict_cid = -1
@@ -317,7 +352,7 @@ class SATSolver:
                                 c.w1 = k
                             else:
                                 c.w2 = k
-                            self.watch_list[lit2].append(cid)
+                            watch_list[lit2 + wl_off].append(cid)
                             # Don't copy cid to wl[j] — effectively removed
                             replaced = True
                             break
@@ -351,6 +386,8 @@ class SATSolver:
 
     ## SO I think real speedups will come from optimizing conflict analysis.
     ## We're trying with the first Unique Implication Point (UIP) in the implication graph. 
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def analyze_conflict(self, conflict_cid: int) -> Tuple[List[int], int]:
         if len(self.level_start) == 0:
             # Conflict at level 0 - UNSAT
@@ -363,7 +400,8 @@ class SATSolver:
         learned: Dict[int, int] = {}
         ## Running counter of literals at the current decision level.
         current_level_count = 0
-        levels = self.levels  # local ref to avoid repeated attr lookup (again, this is a boring mechanical thing.)
+        levels: cython.int[:] = self.levels  # typed memoryview → raw C int* indexing
+        reasons: cython.int[:] = self.reasons
         for lit in conflict_clause.lits:
             v = abs(lit)         
             learned[v] = lit
@@ -387,7 +425,7 @@ class SATSolver:
             #lit_in_learned = learned[v]
             
             # Can only resolve on implied literals (not decisions)
-            reason_cid = self.reasons[v]
+            reason_cid = reasons[v]
             if reason_cid == -1:
                 continue
 
@@ -417,7 +455,7 @@ class SATSolver:
         backjump_level = 0
         
         for v, lit in learned.items():
-            level = self.levels[v]
+            level = levels[v]
             if level == current_level:
                 asserting_lit = lit
             else:
@@ -476,6 +514,8 @@ class SATSolver:
         return SATSolver.luby(i - k + 1)
 
 
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def solve(self) -> Tuple[bool, Optional[Dict[int, bool]]]:
         # Initial propagation at level 0
         conflict = self.propagate()
@@ -574,10 +614,10 @@ class SATSolver:
                     
                     # Set up watches for the new clause
                     if len(c.lits) == 1:
-                        self.watch_list[c.lits[0]].append(cid)
+                        self.watch_list[c.lits[0] + self._wl_off].append(cid)
                     elif len(c.lits) >= 2:
-                        self.watch_list[c.lits[c.w1]].append(cid)
-                        self.watch_list[c.lits[c.w2]].append(cid)
+                        self.watch_list[c.lits[c.w1] + self._wl_off].append(cid)
+                        self.watch_list[c.lits[c.w2] + self._wl_off].append(cid)
 
                     ## If we've accumulated too many learned clauses, clean up.
                     if len(self.alive_learned) > self.max_learnt:
