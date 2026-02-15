@@ -171,7 +171,7 @@ class SATSolver:
         for idx in range(n_to_delete):
             cid = removable[idx][1]
             c = clauses[cid]
-            c.lits = array.array('i')
+            c.lits = []
             c.w1 = 0
             c.w2 = 0
             deleted_cids.add(cid)

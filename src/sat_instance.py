@@ -9,25 +9,21 @@ from typing import List, Set
 ## Now a cdef class via sat_instance.pxd so that w1, w2, learned are
 ## C struct fields instead of Python __dict__ entries.  Every access in
 ## the propagate inner loop becomes a direct pointer dereference (c->w1)
-## instead of a hash-table lookup.  lits is array.array('i') so element
-## access avoids boxing/unboxing Python ints.
+## instead of a hash-table lookup.
 ##
-## NOTE: Do NOT add @cython.cclass here — the .pxd file declares it as
-## cdef class.  Having both causes a conflict.
+## lits stays as a plain Python list — Cython compiles list[i] into
+## PyList_GET_ITEM (a direct C pointer offset), which is faster than
+## array.array[i] through a generic object reference.
 
 class Clause:
-    lits: object           # array.array('i') at runtime
+    lits: list
     w1: cython.int
     w2: cython.int
     learned: cython.bint
 
     def __init__(self, lits, w1: cython.int = 0, w2: cython.int = 1,
                  learned: cython.bint = False):
-        # Accept any iterable; store as array.array('i').
-        if isinstance(lits, array.array):
-            self.lits = lits
-        else:
-            self.lits = array.array('i', lits)
+        self.lits = list(lits) if not isinstance(lits, list) else lits
         self.learned = learned
         # Ensure watch indices are valid.
         n: cython.int = len(self.lits)
@@ -73,5 +69,5 @@ class SATInstance:
         out.append(f"Variables: {sorted(self.vars)}")
         ## Keep the output shape the stencil expects.
         for i, c in enumerate(self.clauses):
-            out.append(f"Clause {i}: {list(c.lits)}")
+            out.append(f"Clause {i}: {c.lits}")
         return "\n".join(out) + "\n"

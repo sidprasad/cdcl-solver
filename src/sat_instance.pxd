@@ -4,7 +4,7 @@
 # instead of Python attribute lookups for Clause instances.
 
 cdef class Clause:
-    cdef public object lits      # array.array('i') — can't be typed further
+    cdef public list lits        # plain list — Cython uses PyList_GET_ITEM
     cdef public int w1
     cdef public int w2
     cdef public bint learned
