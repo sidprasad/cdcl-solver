@@ -118,15 +118,15 @@ class SATSolver:
     @cython.wraparound(False)
     def bump_activity(self, var: cython.int) -> None:
         activity: cython.double[:] = self.activity
-        _var: cython.int = var
-        activity[_var] += self.var_inc
+        v: cython.int = var
+        activity[v] += self.var_inc
         # Rescale if scores get dangerously large (avoids float overflow)
-        if activity[_var] > 1e100:
+        if activity[v] > 1e100:
             i: cython.int
             for i in range(len(self.activity)):
                 activity[i] *= 1e-100
             self.var_inc *= 1e-100
-        heapq.heappush(self.var_heap, (-activity[_var], var))
+        heapq.heappush(self.var_heap, (-activity[v], var))
 
     ## Clause activity helpers to prevent 
     ## the learned clause DB from exploding in size.
