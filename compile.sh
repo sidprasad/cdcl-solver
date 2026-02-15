@@ -13,7 +13,7 @@ fi
 ./venv/bin/pip install -r requirements.txt
 
 # Clean old build artifacts so we always get a fresh compile
-rm -f src/*.so src/solver.c src/sat_instance.c src/dimacs_parser.c
+rm -f src/*.so src/solver.c src/sat_instance.c src/dimacs_parser.c 
 rm -rf src/build
 
 # Compile everything to C via Cython, then compile the C with:

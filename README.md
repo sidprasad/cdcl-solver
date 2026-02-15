@@ -24,6 +24,13 @@ Although it might seem a bit arbitrary, it is not. Two properties of this heuris
 keeps searching in the same search space. Second, always branching on false is much
 better than always branching on true.
 
+
+- Clause min: Clause minimization (simple/ccmin-mode-1) implemented. After 1-UIP conflict analysis, each non-asserting literal is checked: if every antecedent in its reason clause is already in the learned clause or at level 0, the literal is removed as redundant.
+
+Key insight during implementation: VSIDS activity bumps must happen on the pre-minimized clause. Bumping after minimization changed the variable ordering heuristic and caused a 2-3x regression. Moving bumps before minimization preserved VSIDS behavior while producing shorter, more powerful learned clauses.
+
+
+
 ## Structure
 
 Needs to have the following structure:

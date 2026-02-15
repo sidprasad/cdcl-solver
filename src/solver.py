@@ -384,8 +384,7 @@ class SATSolver:
         return -1   
 
 
-    ## SO I think real speedups will come from optimizing conflict analysis.
-    ## We're trying with the first Unique Implication Point (UIP) in the implication graph. 
+    ## 1-UIP conflict analysis with clause minimization.
     @cython.boundscheck(False)
     @cython.wraparound(False)
     def analyze_conflict(self, conflict_cid: int) -> Tuple[List[int], int]:
@@ -447,21 +446,56 @@ class SATSolver:
         
         if not learned:
             return [], -1
-        
+
+        ## VSIDS: bump activity for ALL variables in the 1-UIP clause BEFORE
+        ## minimization, so VSIDS ordering is unaffected by literal removal.
+        for v2 in learned:
+            self.bump_activity(v2)
+        ## VSIDS: make older increments worth less relative to future ones.
+        self.var_inc /= self.var_decay
+
+        # Clause minimization: Remove a non-asserting literal only if EVERY antecedent in its
+        # reason clause is already in the learned set or assigned at level 0.
+        learned_vars: set = set(learned.keys())
+        to_remove: List[int] = []
+        for v2 in learned:
+            if levels[v2] == current_level:
+                continue  # never remove the asserting literal
+            reason_cid2: int = reasons[v2]
+            if reason_cid2 == -1:
+                continue  # decisions are never redundant
+            reason_cl = self.inst.clauses[reason_cid2]
+            removable: bool = True
+            for rlit in reason_cl.lits:
+                rv2: int = abs(rlit)
+                if rv2 == v2:
+                    continue
+                if levels[rv2] == 0:
+                    continue
+                if rv2 not in learned_vars:
+                    removable = False
+                    break
+            if removable:
+                to_remove.append(v2)
+        for v2 in to_remove:
+            del learned[v2]
+
         # Build learned clause with asserting literal first
         # The asserting literal is the one at current_level (should be exactly one)
         asserting_lit = None
         other_lits: List[int] = []
-        backjump_level = 0
+        backjump_level: cython.int = 0
         
+        ## Cython recommended this typing for increased efficiency.
+        lv: cython.int
         for v, lit in learned.items():
-            level = levels[v]
-            if level == current_level:
+            lv = levels[v]
+            if lv == current_level:
                 asserting_lit = lit
             else:
                 other_lits.append(lit)
-                if level > backjump_level:
-                    backjump_level = level
+                if lv > backjump_level:
+                    backjump_level = lv
         
         # Put asserting literal first in the learned clause
         if asserting_lit is not None:
@@ -470,13 +504,6 @@ class SATSolver:
             learned_clause = other_lits
             backjump_level = 0
 
-        ## VSIDS: increase activity for every variable in the learned clause.
-        if learned_clause is not None:
-            for lit in learned_clause:
-                self.bump_activity(abs(lit))
-        ## VSIDS: make older increments worth less relative to future ones.
-        self.var_inc /= self.var_decay
-        
         ## Same idea as VSIDS: inflate the increment instead of shrinking every score.
         ## Saves a small increment of time since its O(1) instead of O(num learned clauses).
         self.clause_inc /= self.clause_decay

@@ -75,11 +75,10 @@ def main(args):
             else:
                 ## High-density — massively constrained.
                 ## Fast VSIDS decay (0.85) forgets old conflicts quickly,
-                ## avoiding commitment to stale search directions (picoSAT
-                ## design rationale, Biere 2008). Rapid restarts (luby_base
-                ## 32) let the solver escape bad regions early. Higher
-                ## random_freq provides diversification to avoid plateaus.
-                ## Aggressive learned-clause cleanup prevents memory blowup
+                ## avoiding commitment to stale search directions Rapid restarts 
+                # (let the solver escape bad regions early. Higher
+                # random_freq provides diversification to avoid plateaus.
+                # Aggressive learned-clause cleanup prevents memory blowup
                 ## when clauses/var ratio is enormous.
                 print(f"High-density instance (density={density:.2f}), using fast VSIDS decay and rapid restarts")
                 solver = SATSolver(
