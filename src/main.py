@@ -1,4 +1,5 @@
 import json
+import random
 from pathlib import Path
 from argparse import ArgumentParser
 from dimacs_parser import DimacsParser
@@ -6,6 +7,7 @@ from model_timer import Timer
 
 def main(args):
     input_file = args.input_file
+    random.seed(42)  # deterministic runs for reproducibility
     
     if not input_file:
         print("Usage: python3 src/main.py <cnf file>")

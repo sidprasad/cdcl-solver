@@ -453,48 +453,12 @@ class SATSolver:
         if not learned:
             return [], -1
 
-        ## VSIDS: bump activity for ALL variables in the 1-UIP clause BEFORE
-        ## minimization, so VSIDS ordering is unaffected by literal removal.
-        for v2 in learned:
-            self.bump_activity(v2)
-        ## VSIDS: make older increments worth less relative to future ones.
-        self.var_inc /= self.var_decay
-
-        # Clause minimization: Remove a non-asserting literal only if EVERY antecedent in its
-        # reason clause is already in the learned set or assigned at level 0.
-        learned_vars: set = set(learned.keys())
-        to_remove: List[int] = []
-        _v2: cython.int
-        for _v2 in learned:
-            if levels[_v2] == current_level:
-                continue  # never remove the asserting literal
-            reason_cid2: cython.int = reasons[_v2]
-            if reason_cid2 == -1:
-                continue  # decisions are never redundant
-            reason_cl = self.inst.clauses[reason_cid2]
-            removable: bool = True
-            _rv2: cython.int
-            for rlit in reason_cl.lits:
-                _rv2 = abs(rlit)
-                if _rv2 == _v2:
-                    continue
-                if levels[_rv2] == 0:
-                    continue
-                if _rv2 not in learned_vars:
-                    removable = False
-                    break
-            if removable:
-                to_remove.append(_v2)
-        for _v2 in to_remove:
-            del learned[_v2]
-
         # Build learned clause with asserting literal first
         # The asserting literal is the one at current_level (should be exactly one)
         asserting_lit = None
         other_lits: List[int] = []
         backjump_level: cython.int = 0
         
-        ## Cython recommended this typing for increased efficiency.
         lv: cython.int
         for v, lit in learned.items():
             lv = levels[v]
@@ -511,6 +475,13 @@ class SATSolver:
         else:
             learned_clause = other_lits
             backjump_level = 0
+
+        ## VSIDS: increase activity for every variable in the (minimized) learned clause.
+        if learned_clause is not None:
+            for lit in learned_clause:
+                self.bump_activity(abs(lit))
+        ## VSIDS: make older increments worth less relative to future ones.
+        self.var_inc /= self.var_decay
 
         ## Same idea as VSIDS: inflate the increment instead of shrinking every score.
         ## Saves a small increment of time since its O(1) instead of O(num learned clauses).
