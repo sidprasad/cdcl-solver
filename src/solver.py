@@ -116,15 +116,17 @@ class SATSolver:
     ## Helper for VSIDS.
     @cython.boundscheck(False)
     @cython.wraparound(False)
-    def bump_activity(self, var: int) -> None:
+    def bump_activity(self, var: cython.int) -> None:
         activity: cython.double[:] = self.activity
-        activity[var] += self.var_inc
+        _var: cython.int = var
+        activity[_var] += self.var_inc
         # Rescale if scores get dangerously large (avoids float overflow)
-        if activity[var] > 1e100:
+        if activity[_var] > 1e100:
+            i: cython.int
             for i in range(len(self.activity)):
                 activity[i] *= 1e-100
             self.var_inc *= 1e-100
-        heapq.heappush(self.var_heap, (-activity[var], var))
+        heapq.heappush(self.var_heap, (-activity[_var], var))
 
     ## Clause activity helpers to prevent 
     ## the learned clause DB from exploding in size.
@@ -153,8 +155,9 @@ class SATSolver:
         # Determine which cids are locked (reason for a current assignment)
         reasons: cython.int[:] = self.reasons
         locked: Set[int] = set()
-        for v in self.inst.vars:
-            r = reasons[v]
+        _v: cython.int
+        for _v in self.inst.vars:
+            r = reasons[_v]
             if r != -1 and r in self.alive_learned:
                 locked.add(r)
 
@@ -206,9 +209,9 @@ class SATSolver:
         assignments: cython.int[:] = self.assignments
         levels: cython.int[:] = self.levels
         reasons: cython.int[:] = self.reasons
-        v = abs(lit)
-        val = 1 if lit > 0 else -1
-        cur = assignments[v]
+        v: cython.int = abs(lit)
+        val: cython.int = 1 if lit > 0 else -1
+        cur: cython.int = assignments[v]
         if cur != 0:
             return cur == val  # must be consistent
 
@@ -240,13 +243,14 @@ class SATSolver:
         activity: cython.double[:] = self.activity
 
         # Reset everything above the cutoff.
+        _bv: cython.int
         for lit in self.assignment_log[cutoff:]:
-            v = abs(lit)
-            assignments[v] = 0
-            levels[v] = 0
-            reasons[v] = -1
-            self.unassigned_set.add(v)
-            heapq.heappush(self.var_heap, (-activity[v], v))
+            _bv = abs(lit)
+            assignments[_bv] = 0
+            levels[_bv] = 0
+            reasons[_bv] = -1
+            self.unassigned_set.add(_bv)
+            heapq.heappush(self.var_heap, (-activity[_bv], _bv))
         
         # And erase history.
         self.assignment_log = self.assignment_log[:cutoff]
@@ -297,7 +301,7 @@ class SATSolver:
                     # Unit clause — keep watching, try to propagate
                     wl[j] = cid; j += 1
                     l = c.lits[0]
-                    _v = abs(l); _a = assignments[_v]
+                    _v: cython.int = abs(l); _a: cython.int = assignments[_v]
                     val = _a if l > 0 else -_a
                     if val < 0:
                         conflict_cid = cid; break
@@ -321,7 +325,7 @@ class SATSolver:
                     wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
                     _v = abs(other_lit); _a = assignments[_v]
-                    other_val = _a if other_lit > 0 else -_a
+                    other_val: cython.int = _a if other_lit > 0 else -_a
                     if other_val < 0:
                         conflict_cid = cid; break
                     elif other_val == 0:
@@ -344,7 +348,7 @@ class SATSolver:
                     for k, lit2 in enumerate(c.lits):
                         if k == other_idx:
                             continue
-                        _v2 = abs(lit2); _a2 = assignments[_v2]
+                        _v2: cython.int = abs(lit2); _a2: cython.int = assignments[_v2]
                         val2 = _a2 if lit2 > 0 else -_a2
                         if val2 >= 0:
                             # Move the watch to lit2
@@ -364,7 +368,7 @@ class SATSolver:
                     wl[j] = cid; j += 1
                     other_lit = c.lits[other_idx]
                     _v = abs(other_lit); _a = assignments[_v]
-                    other_val = _a if other_lit > 0 else -_a
+                    other_val = _a if other_lit > 0 else -_a  # type: cython.int
                     if other_val < 0:
                         conflict_cid = cid; break
                     if other_val == 0:
@@ -401,8 +405,10 @@ class SATSolver:
         current_level_count = 0
         levels: cython.int[:] = self.levels  # typed memoryview → raw C int* indexing
         reasons: cython.int[:] = self.reasons
+        v: cython.int
+        rv: cython.int
         for lit in conflict_clause.lits:
-            v = abs(lit)         
+            v = abs(lit)
             learned[v] = lit
             if levels[v] == current_level:
                 current_level_count += 1
@@ -441,7 +447,7 @@ class SATSolver:
                 rv = abs(reason_lit)
                 if rv != v and rv not in learned:
                     learned[rv] = reason_lit
-                    if levels[rv] == current_level:
+                    if levels[rv] == current_level:  # rv typed above
                         current_level_count += 1
         
         if not learned:
@@ -458,27 +464,29 @@ class SATSolver:
         # reason clause is already in the learned set or assigned at level 0.
         learned_vars: set = set(learned.keys())
         to_remove: List[int] = []
-        for v2 in learned:
-            if levels[v2] == current_level:
+        _v2: cython.int
+        for _v2 in learned:
+            if levels[_v2] == current_level:
                 continue  # never remove the asserting literal
-            reason_cid2: int = reasons[v2]
+            reason_cid2: cython.int = reasons[_v2]
             if reason_cid2 == -1:
                 continue  # decisions are never redundant
             reason_cl = self.inst.clauses[reason_cid2]
             removable: bool = True
+            _rv2: cython.int
             for rlit in reason_cl.lits:
-                rv2: int = abs(rlit)
-                if rv2 == v2:
+                _rv2 = abs(rlit)
+                if _rv2 == _v2:
                     continue
-                if levels[rv2] == 0:
+                if levels[_rv2] == 0:
                     continue
-                if rv2 not in learned_vars:
+                if _rv2 not in learned_vars:
                     removable = False
                     break
             if removable:
-                to_remove.append(v2)
-        for v2 in to_remove:
-            del learned[v2]
+                to_remove.append(_v2)
+        for _v2 in to_remove:
+            del learned[_v2]
 
         # Build learned clause with asserting literal first
         # The asserting literal is the one at current_level (should be exactly one)
