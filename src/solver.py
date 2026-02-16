@@ -1,13 +1,10 @@
 from typing import Set, List, Dict, Optional, Tuple  # Optional kept for solve() return type
-from collections import defaultdict, deque
 from sat_instance import SATInstance
 import random
 import heapq
 import array
 import cython
 
-
-## Now these are hyperparameters we can tune and experiment with.
 class SATSolver:
     def __init__(
         self,
