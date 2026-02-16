@@ -38,7 +38,7 @@ class SATSolver:
         n = self.max_var + 1  # array size
 
         ## Assignment: 0 = unassigned, 1 = True, -1 = False
-        ## array.array('i') gives Cython typed memoryview access → raw C int* indexing.
+        ## array.array('i') gives Cython typed memoryview access.
         self.assignments = array.array('i', [0] * n)
         ## Decision level of each variable.
         self.levels = array.array('i', [0] * n)
@@ -46,6 +46,9 @@ class SATSolver:
         self.reasons = array.array('i', [-1] * n)
         ## VSIDS activity scores.
         self.activity = array.array('d', [0.0] * n)
+
+        ## Reusable flat buffer for analyze_conflict.
+        self._learned_buf = array.array('i', [0] * n)
 
         ## Needed for non-chronological backtracking.
         ## Literal assignment order.
@@ -63,7 +66,6 @@ class SATSolver:
         self.unassigned_set: Set[int] = set(vars)
 
         ## Adapted from MINISATS Variable State Independent Decaying Sum Algorithm.
-        ## Activity scores are in self.activity[] (flat array above).
         ## - Every variable starts with an activity score of 0.
         ## - Whenever a conflict occurs, the
         ##   variables involved in the learned clause have their activity scores increased by `var_inc`.
@@ -78,13 +80,18 @@ class SATSolver:
         self.var_heap: List[Tuple[float, int]] = [(0.0, v) for v in vars]
         heapq.heapify(self.var_heap)
 
-        ## ── Clause activity (for learned clause deletion) ────────────
         ## Mirrors VSIDS but for clauses: recently-useful learned clauses
         ## get bumped, older ones decay.  On cleanup we keep the top half
         ## by activity and delete the rest.
         self.clause_activity: Dict[int, float] = {}   # cid -> activity
         self.clause_inc: float = 1.0
         self.clause_decay: float = clause_decay
+        ## LBD (Literal Block Distance) = number of distinct decision levels
+        ## in a learned clause.  Glucose (Audemard & Simon, IJCAI 2009) showed
+        ## that LBD is a much better quality metric than clause size or activity.
+        ## Clauses with LBD <= 2 ("glue clauses") are almost always useful and
+        ## are kept permanently.
+        self.clause_lbd: Dict[int, int] = {}   # cid -> LBD
         ## How many learned clauses before we trigger a cleanup.
         self.max_learnt: int = max_learnt if max_learnt >= 0 else max_learnt_min
         ## Track which cids are learned and alive (not deleted).
@@ -93,8 +100,10 @@ class SATSolver:
         ## Maps a literal to the list of clause IDs watching it.
         ## Flat list indexed by (literal + max_var) eliminates dict hash lookups.
         ## Literals range from -max_var to +max_var, so size = 2*max_var+1.
+        ## Inner arrays are array.array('i') so propagate can cast to typed
+        ## memoryview for direct C-level index access in the hot loop.
         self._wl_off: int = self.max_var
-        self.watch_list: List[List[int]] = [[] for _ in range(2 * self.max_var + 1)]
+        self.watch_list = [array.array('i') for _ in range(2 * self.max_var + 1)]
         self._init_watches()
 
     def _init_watches(self) -> None:
@@ -161,24 +170,33 @@ class SATSolver:
             if r != -1 and r in self.alive_learned:
                 locked.add(r)
 
-        # Sort removable learned clauses by activity (ascending)
-        removable = [(self.clause_activity.get(cid, 0.0), cid)
-                     for cid in self.alive_learned if cid not in locked]
+        # Collect removable clauses: skip locked and glue (LBD <= 2).
+        # Sort by (LBD, -activity) so high-LBD low-activity clauses die first.
+        clause_lbd = self.clause_lbd
+        removable = []
+        for cid in self.alive_learned:
+            if cid in locked:
+                continue
+            lbd = clause_lbd.get(cid, 100)
+            if lbd <= 2:
+                continue  # glue clause — always keep
+            removable.append((lbd, -self.clause_activity.get(cid, 0.0), cid))
         removable.sort()
 
-        # Keep only half of the removable clauses.
+        # Delete the worse half of removable clauses.
         n_to_delete = len(removable) // 2
         clauses = self.inst.clauses
         cact = self.clause_activity
         deleted_cids = set()
         for idx in range(n_to_delete):
-            cid = removable[idx][1]
+            cid = removable[idx][2]
             c = clauses[cid]
             c.lits = []
             c.w1 = 0
             c.w2 = 0
             deleted_cids.add(cid)
-            del cact[cid]
+            cact.pop(cid, None)
+            clause_lbd.pop(cid, None)
         # Bulk set subtraction — faster than N individual discards
         self.alive_learned -= deleted_cids
 
@@ -260,174 +278,175 @@ class SATSolver:
 
 
         
-    # Now unit propagation with watched literals
+    # Unit propagation with 2-watched literals.
     # Returns the conflicting clause ID, or -1 if no conflict.
     @cython.boundscheck(False)
     @cython.wraparound(False)
     def propagate(self) -> int:
-        ## This is the complex part.
-        ## Unlike DPLL, we look at clauses watching the negation of the assigned literal.
-
-        ## Cache list ref as local — avoids self.assignment_log attr lookup every iteration.
-        ## len() on the same list object still reflects appends from assign_lit.
         assignment_log = self.assignment_log
-        ## Typed memoryview → raw C int* indexing in inner loop.
         assignments: cython.int[:] = self.assignments
-        wl_off = self._wl_off
+        wl_off: cython.int = self._wl_off
         watch_list = self.watch_list
+        clauses = self.inst.clauses
+
+        # All C-typed locals for the inner loop — no Python objects.
+        _v: cython.int
+        _a: cython.int
+        val: cython.int
+        cid: cython.int
+        num_lits: cython.int
+        ri: cython.int          # read index into watch list
+        wi: cython.int          # write index (compaction)
+        n: cython.int
+        k: cython.int
+        found: cython.int       # 1 = replacement watch found (replaces Python bool)
+        conflict_cid: cython.int
+
         while self.next_to_propagate < len(assignment_log):
             literal = assignment_log[self.next_to_propagate]
             self.next_to_propagate += 1
-
             neg_literal = -literal
 
-            ## In-place filtering: read pointer (i) advances over every entry, write pointer (j) only advances for entries we keep.
-            ## Entries that move their watch to another literal are dropped
-            ## implicitly (j doesn't advance), so no remove() or `in` check needed.
+            # In-place compaction: ri scans every entry, wi tracks entries
+            # we keep.  Entries whose watch moves elsewhere are simply
+            # skipped (wi doesn't advance).  Zero allocation.
             wl = watch_list[neg_literal + wl_off]
-            i = 0
-            j = 0
+            wl_buf: cython.int[:] = wl
+            ri = 0
+            wi = 0
+            n = len(wl_buf)
             conflict_cid = -1
-            while i < len(wl):
-                cid = wl[i]
-                i += 1
-                c = self.inst.clauses[cid]
-                num_lits = len(c.lits)
+
+            while ri < n:
+                cid = wl_buf[ri]; ri += 1
+                c = clauses[cid]
+                lits = c.lits
+                num_lits = len(lits)
 
                 if num_lits == 0:
-                    # Deleted clause — drop from watch list (don't copy to wl[j])
-                    continue
-                elif num_lits == 1:
-                    # Unit clause — keep watching, try to propagate
-                    wl[j] = cid; j += 1
-                    l = c.lits[0]
-                    _v: cython.int = abs(l); _a: cython.int = assignments[_v]
-                    val = _a if l > 0 else -_a
+                    continue  # deleted clause — drop
+
+                if num_lits == 1:
+                    wl_buf[wi] = cid; wi += 1
+                    _v = abs(lits[0]); _a = assignments[_v]
+                    val = _a if lits[0] > 0 else -_a
                     if val < 0:
                         conflict_cid = cid; break
-                    elif val == 0:
-                        if not self.assign_lit(l, reason_cid=cid):
-                            conflict_cid = cid; break
-                    continue
-                elif num_lits == 2:
-                    l1 = c.lits[c.w1]
-                    l2 = c.lits[c.w2]
-
-                    if l1 == neg_literal:
-                        other_idx = c.w2
-                    elif l2 == neg_literal:
-                        other_idx = c.w1
-                    else:
-                        # Stale
-                        continue
-
-                    # Binary clause: can't move the watch, always keep it
-                    wl[j] = cid; j += 1
-                    other_lit = c.lits[other_idx]
-                    _v = abs(other_lit); _a = assignments[_v]
-                    other_val: cython.int = _a if other_lit > 0 else -_a
-                    if other_val < 0:
+                    if val == 0 and not self.assign_lit(lits[0], reason_cid=cid):
                         conflict_cid = cid; break
-                    elif other_val == 0:
-                        if not self.assign_lit(other_lit, reason_cid=cid):
-                            conflict_cid = cid; break
                     continue
-                else:
-                    # General case (>=3 literals): try to find a replacement watch
-                    if c.lits[c.w1] == neg_literal:
-                        watched_idx = c.w1
-                        other_idx = c.w2
-                    elif c.lits[c.w2] == neg_literal:
-                        watched_idx = c.w2
-                        other_idx = c.w1
-                    else:
-                        # Stale
-                        continue
 
-                    replaced = False
-                    for k, lit2 in enumerate(c.lits):
-                        if k == other_idx:
-                            continue
-                        _v2: cython.int = abs(lit2); _a2: cython.int = assignments[_v2]
-                        val2 = _a2 if lit2 > 0 else -_a2
-                        if val2 >= 0:
-                            # Move the watch to lit2
+                if num_lits == 2:
+                    if lits[c.w1] == neg_literal:
+                        other_lit = lits[c.w2]
+                    elif lits[c.w2] == neg_literal:
+                        other_lit = lits[c.w1]
+                    else:
+                        continue  # stale
+                    wl_buf[wi] = cid; wi += 1
+                    _v = abs(other_lit); _a = assignments[_v]
+                    val = _a if other_lit > 0 else -_a
+                    if val < 0:
+                        conflict_cid = cid; break
+                    if val == 0 and not self.assign_lit(other_lit, reason_cid=cid):
+                        conflict_cid = cid; break
+                    continue
+
+                # >=3 literals: try to move the falsified watch
+                if lits[c.w1] == neg_literal:
+                    watched_idx = c.w1; other_idx = c.w2
+                elif lits[c.w2] == neg_literal:
+                    watched_idx = c.w2; other_idx = c.w1
+                else:
+                    continue  # stale
+
+                found = 0
+                k = 0
+                while k < num_lits:
+                    if k != other_idx:
+                        lit2 = lits[k]
+                        _v = abs(lit2); _a = assignments[_v]
+                        val = _a if lit2 > 0 else -_a
+                        if val >= 0:
                             if watched_idx == c.w1:
                                 c.w1 = k
                             else:
                                 c.w2 = k
                             watch_list[lit2 + wl_off].append(cid)
-                            # Don't copy cid to wl[j] — effectively removed
-                            replaced = True
+                            found = 1
                             break
+                    k += 1
 
-                    if replaced:
-                        continue
+                if found:
+                    continue  # watch moved; not kept here
 
-                    # No replacement — keep watching, propagate or conflict
-                    wl[j] = cid; j += 1
-                    other_lit = c.lits[other_idx]
-                    _v = abs(other_lit); _a = assignments[_v]
-                    other_val = _a if other_lit > 0 else -_a  # type: cython.int
-                    if other_val < 0:
-                        conflict_cid = cid; break
-                    if other_val == 0:
-                        if not self.assign_lit(other_lit, reason_cid=cid):
-                            conflict_cid = cid; break
-                    continue
+                # Can't move watch — keep it, propagate the other literal
+                wl_buf[wi] = cid; wi += 1
+                other_lit = lits[other_idx]
+                _v = abs(other_lit); _a = assignments[_v]
+                val = _a if other_lit > 0 else -_a
+                if val < 0:
+                    conflict_cid = cid; break
+                if val == 0 and not self.assign_lit(other_lit, reason_cid=cid):
+                    conflict_cid = cid; break
 
-            # On early exit (conflict), copy remaining entries we haven't looked at
-            while i < len(wl):
-                wl[j] = wl[i]
-                i += 1; j += 1
-            # Truncate the list to the write pointer
-            del wl[j:]
+            # Copy unprocessed entries on early exit, then truncate.
+            while ri < n:
+                wl_buf[wi] = wl_buf[ri]; ri += 1; wi += 1
+            # Release the memoryview before resizing the underlying array.
+            wl_buf = None
+            del wl[wi:]
 
             if conflict_cid >= 0:
                 return conflict_cid
-        return -1   
+
+        return -1
 
 
-    ## 1-UIP conflict analysis with clause minimization.
+    ## 1-UIP conflict analysis with LBD computation.
     @cython.boundscheck(False)
     @cython.wraparound(False)
-    def analyze_conflict(self, conflict_cid: int) -> Tuple[List[int], int]:
+    def analyze_conflict(self, conflict_cid: int) -> Tuple[List[int], int, int]:
         if len(self.level_start) == 0:
             # Conflict at level 0 - UNSAT
-            return [], -1
+            return [], -1, 0
         
         current_level = self.get_current_level()
         conflict_clause = self.inst.clauses[conflict_cid]
         
-        ## Prevents conflation between variables and lits.
-        learned: Dict[int, int] = {}
+        ## Flat array replaces Dict[int, int]: learned_buf[v] = literal (0 = absent).
+        ## Every lookup/insert/delete is a single C array index instead of a dict hash.
+        learned_buf: cython.int[:] = self._learned_buf
+        learned_trail: List[int] = []  # variables touched (for iteration + cleanup)
+        learned_count: cython.int = 0
         ## Running counter of literals at the current decision level.
-        current_level_count = 0
-        levels: cython.int[:] = self.levels  # typed memoryview → raw C int* indexing
+        current_level_count: cython.int = 0
+        levels: cython.int[:] = self.levels
         reasons: cython.int[:] = self.reasons
         v: cython.int
         rv: cython.int
+        tv: cython.int
+        tlit: cython.int
+        lv: cython.int
         for lit in conflict_clause.lits:
             v = abs(lit)
-            learned[v] = lit
+            if learned_buf[v] == 0:
+                learned_trail.append(v)
+                learned_count += 1
+            learned_buf[v] = lit
             if levels[v] == current_level:
                 current_level_count += 1
         
         # Walk backwards through assignment log to resolve to first UIP
-        i = len(self.assignment_log) - 1
+        i: cython.int = len(self.assignment_log) - 1
         while current_level_count > 1 and i >= 0:
-            # Get the assigned literal (the one that became true)
             assigned_lit = self.assignment_log[i]
             i -= 1
             v = abs(assigned_lit)
             
             # Check if this variable is in our learned clause
-            if v not in learned:
+            if learned_buf[v] == 0:
                 continue
-            
-            # The literal in learned clause must be the negation of assigned_lit
-            # (since all literals in a conflict clause are false)
-            #lit_in_learned = learned[v]
             
             # Can only resolve on implied literals (not decisions)
             reason_cid = reasons[v]
@@ -438,34 +457,40 @@ class SATSolver:
             self.bump_clause_activity(reason_cid)
 
             # Resolve: remove this variable, add other literals from reason clause
-            del learned[v]
-            ## v is at current_level (we're walking backwards through it), so decrement.
+            learned_buf[v] = 0
+            learned_count -= 1
             current_level_count -= 1
             
             reason_clause = self.inst.clauses[reason_cid]
             for reason_lit in reason_clause.lits:
                 rv = abs(reason_lit)
-                if rv != v and rv not in learned:
-                    learned[rv] = reason_lit
-                    if levels[rv] == current_level:  # rv typed above
+                if rv != v and learned_buf[rv] == 0:
+                    learned_buf[rv] = reason_lit
+                    learned_trail.append(rv)
+                    learned_count += 1
+                    if levels[rv] == current_level:
                         current_level_count += 1
         
-        if not learned:
-            return [], -1
+        if learned_count == 0:
+            # Cleanup buffer
+            for tv in learned_trail:
+                learned_buf[tv] = 0
+            return [], -1, 0
 
         # Build learned clause with asserting literal first
-        # The asserting literal is the one at current_level (should be exactly one)
         asserting_lit = None
         other_lits: List[int] = []
         backjump_level: cython.int = 0
         
-        lv: cython.int
-        for v, lit in learned.items():
-            lv = levels[v]
+        for tv in learned_trail:
+            tlit = learned_buf[tv]
+            if tlit == 0:
+                continue  # deleted during resolution
+            lv = levels[tv]
             if lv == current_level:
-                asserting_lit = lit
+                asserting_lit = tlit
             else:
-                other_lits.append(lit)
+                other_lits.append(tlit)
                 if lv > backjump_level:
                     backjump_level = lv
         
@@ -476,7 +501,16 @@ class SATSolver:
             learned_clause = other_lits
             backjump_level = 0
 
-        ## VSIDS: increase activity for every variable in the (minimized) learned clause.
+        ## LBD = number of distinct decision levels in the learned clause.
+        ## Computed via a small set over the levels we already collected.
+        lbd_set: Set[int] = set()
+        for tv in learned_trail:
+            tlit = learned_buf[tv]
+            if tlit != 0:
+                lbd_set.add(levels[tv])
+        lbd: int = len(lbd_set)
+
+        ## VSIDS: increase activity for every variable in the learned clause.
         if learned_clause is not None:
             for lit in learned_clause:
                 self.bump_activity(abs(lit))
@@ -484,14 +518,15 @@ class SATSolver:
         self.var_inc /= self.var_decay
 
         ## Same idea as VSIDS: inflate the increment instead of shrinking every score.
-        ## Saves a small increment of time since its O(1) instead of O(num learned clauses).
         self.clause_inc /= self.clause_decay
 
-        return learned_clause, backjump_level
+        # Cleanup buffer for next call
+        for tv in learned_trail:
+            learned_buf[tv] = 0
+
+        return learned_clause, backjump_level, lbd
 
 
-
-    ## Luby restart sequence (Luby, Sinclair & Zuckerman 1993).
     ## Precomputed table avoids recursive calls on every restart.
     @staticmethod
     def _build_luby_table(size: int) -> List[int]:
@@ -597,7 +632,7 @@ class SATSolver:
                     break
                 
                 # Analyze conflict and determine backjump level
-                learned_clause, backjump_level = self.analyze_conflict(conflict)
+                learned_clause, backjump_level, lbd = self.analyze_conflict(conflict)
                 
                 if backjump_level < 0:
                     # UNSAT
@@ -614,8 +649,9 @@ class SATSolver:
                     cid = self.inst.add_clause(learned_clause, learned=True)
                     c = self.inst.clauses[cid]
 
-                    ## Register with clause activity tracking.
+                    ## Register with clause activity + LBD tracking.
                     self.clause_activity[cid] = 0.0
+                    self.clause_lbd[cid] = lbd
                     self.alive_learned.add(cid)
                     
                     # Set up watches for the new clause
