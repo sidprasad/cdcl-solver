@@ -358,10 +358,20 @@ class SATSolver:
                 else:
                     continue  # stale
 
+                ## MiniSat optimisation: if the other watched literal is
+                ## already satisfied the clause is trivially true — skip
+                ## the expensive replacement scan entirely.
+                other_lit = lits[other_idx]
+                _v = abs(other_lit); _a = assignments[_v]
+                val = _a if other_lit > 0 else -_a
+                if val > 0:
+                    wl_buf[wi] = cid; wi += 1
+                    continue
+
                 found = 0
                 k = 0
                 while k < num_lits:
-                    if k != other_idx:
+                    if k != other_idx and k != watched_idx:
                         lit2 = lits[k]
                         _v = abs(lit2); _a = assignments[_v]
                         val = _a if lit2 > 0 else -_a

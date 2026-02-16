@@ -51,7 +51,7 @@ def main(args):
                 ## formulas (Eén & Sörensson, MiniSat tech report).
                 ## Longer Luby runs let propagation exploit structure
                 ## before restarting (Luby et al. 1993).
-                print(f"Low-density instance (density={density:.2f}), using long-term VSIDS and longer restarts")
+                #print(f"Low-density instance (density={density:.2f}), using long-term VSIDS and longer restarts")
                 solver = SATSolver(
                     instance,
                     var_decay=0.99,
@@ -65,7 +65,7 @@ def main(args):
                 ## Medium-density — near or above 3-SAT phase transition.
                 ## Tight learned-clause DB: keeps watch lists short for
                 ## faster propagation (~40% more conflicts/sec in sweep).
-                print(f"Medium-density instance (density={density:.2f}), using tight-db MiniSat parameters")
+                #print(f"Medium-density instance (density={density:.2f}), using tight-db MiniSat parameters")
                 solver = SATSolver(
                     instance,
                     var_decay=0.95,
@@ -83,7 +83,7 @@ def main(args):
                 # random_freq provides diversification to avoid plateaus.
                 # Aggressive learned-clause cleanup prevents memory blowup
                 ## when clauses/var ratio is enormous.
-                print(f"High-density instance (density={density:.2f}), using fast VSIDS decay and rapid restarts")
+                #print(f"High-density instance (density={density:.2f}), using fast VSIDS decay and rapid restarts")
                 solver = SATSolver(
                     instance,
                     var_decay=0.85,
