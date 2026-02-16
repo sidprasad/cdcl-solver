@@ -289,17 +289,18 @@ class SATSolver:
         watch_list = self.watch_list
         clauses = self.inst.clauses
 
-        # All C-typed locals for the inner loop — no Python objects.
+        # Impl level optimization: All C-typed locals for the inner loop.
+        # THis allows Cython to optimize.
         _v: cython.int
         _a: cython.int
         val: cython.int
         cid: cython.int
         num_lits: cython.int
         ri: cython.int          # read index into watch list
-        wi: cython.int          # write index (compaction)
+        wi: cython.int          # write index for write list compaction.
         n: cython.int
         k: cython.int
-        found: cython.int       # 1 = replacement watch found (replaces Python bool)
+        found: cython.int       # 1 = replacement watch found
         conflict_cid: cython.int
 
         while self.next_to_propagate < len(assignment_log):
@@ -307,9 +308,6 @@ class SATSolver:
             self.next_to_propagate += 1
             neg_literal = -literal
 
-            # In-place compaction: ri scans every entry, wi tracks entries
-            # we keep.  Entries whose watch moves elsewhere are simply
-            # skipped (wi doesn't advance).  Zero allocation.
             wl = watch_list[neg_literal + wl_off]
             wl_buf: cython.int[:] = wl
             ri = 0
@@ -414,10 +412,8 @@ class SATSolver:
         current_level = self.get_current_level()
         conflict_clause = self.inst.clauses[conflict_cid]
         
-        ## Flat array replaces Dict[int, int]: learned_buf[v] = literal (0 = absent).
-        ## Every lookup/insert/delete is a single C array index instead of a dict hash.
         learned_buf: cython.int[:] = self._learned_buf
-        learned_trail: List[int] = []  # variables touched (for iteration + cleanup)
+        learned_trail: List[int] = []  # variables touched 
         learned_count: cython.int = 0
         ## Running counter of literals at the current decision level.
         current_level_count: cython.int = 0
