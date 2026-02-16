@@ -358,15 +358,12 @@ class SATSolver:
                 else:
                     continue  # stale
 
-                ## MiniSat optimisation: if the other watched literal is
-                ## already satisfied the clause is trivially true — skip
-                ## the expensive replacement scan entirely.
+                ## Check other watched literal first — if it's already
+                ## satisfied we know the clause is true and only need to
+                ## find a replacement watch (no propagation/conflict).
                 other_lit = lits[other_idx]
                 _v = abs(other_lit); _a = assignments[_v]
-                val = _a if other_lit > 0 else -_a
-                if val > 0:
-                    wl_buf[wi] = cid; wi += 1
-                    continue
+                other_val: cython.int = _a if other_lit > 0 else -_a
 
                 found = 0
                 k = 0
@@ -388,14 +385,14 @@ class SATSolver:
                 if found:
                     continue  # watch moved; not kept here
 
-                # Can't move watch — keep it, propagate the other literal
+                # Can't move watch — keep it.
+                # We already know other_val from above.
                 wl_buf[wi] = cid; wi += 1
-                other_lit = lits[other_idx]
-                _v = abs(other_lit); _a = assignments[_v]
-                val = _a if other_lit > 0 else -_a
-                if val < 0:
+                if other_val > 0:
+                    continue  # clause satisfied, nothing to propagate
+                if other_val < 0:
                     conflict_cid = cid; break
-                if val == 0 and not self.assign_lit(other_lit, reason_cid=cid):
+                if not self.assign_lit(other_lit, reason_cid=cid):
                     conflict_cid = cid; break
 
             # Copy unprocessed entries on early exit, then truncate.
