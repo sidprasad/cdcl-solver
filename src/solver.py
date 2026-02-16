@@ -168,7 +168,8 @@ class SATSolver:
                 locked.add(r)
 
         # Collect removable clauses: skip locked and glue (LBD <= 2).
-        # Sort by (LBD, -activity) so high-LBD low-activity clauses die first.
+        # Sort ascending by (LBD, -activity): best clauses (low LBD,
+        # high activity) end up first, worst end up last.
         clause_lbd = self.clause_lbd
         removable = []
         for cid in self.alive_learned:
@@ -180,12 +181,14 @@ class SATSolver:
             removable.append((lbd, -self.clause_activity.get(cid, 0.0), cid))
         removable.sort()
 
-        # Delete the worse half of removable clauses.
+        # Delete the worse half of removable clauses (the TAIL of the
+        # sorted list — high LBD, low activity).
         n_to_delete = len(removable) // 2
         clauses = self.inst.clauses
         cact = self.clause_activity
         deleted_cids = set()
-        for idx in range(n_to_delete):
+        start: cython.int = len(removable) - n_to_delete
+        for idx in range(start, len(removable)):
             cid = removable[idx][2]
             c = clauses[cid]
             c.lits = []
@@ -600,9 +603,9 @@ class SATSolver:
                 if next_var is None:
                     next_var = next(iter(self.unassigned_set))
                 ## Always-negative polarity (MiniSat 1.0 heuristic).
-                ## Phase saving hurt UNSAT instances badly — the solver
-                ## kept returning to the same failing region instead of
-                ## exploring widely to prove unsatisfiability.
+                ## Phase saving was tested but hurt these structured/UNSAT
+                ## instances — the solver kept returning to the same
+                ## failing region.
                 self.decide(-next_var)
 
             
