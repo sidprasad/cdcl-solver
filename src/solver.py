@@ -62,18 +62,15 @@ class SATSolver:
         ## Tracking unassigned variables. If none, we're done, else we can use this for random decisions.
         self.unassigned_set: Set[int] = set(vars)
 
-        ## Adapted from MINISATS Variable State Independent Decaying Sum Algorithm.
+        ## Adapted from MINISATs VSIDS:
         ## - Every variable starts with an activity score of 0.
         ## - Whenever a conflict occurs, the
-        ##   variables involved in the learned clause have their activity scores increased by `var_inc`.
+        ##   variables involved in the learned clause have their activity scores increased.
         ## - After every conflict, ALL activity scores are divided by a decay factor.
-        ##  Instead of touching every score, we increase `var_inc` by decay factor so that future increases are worth more.
         self.var_inc: float = 1.0 
         self.var_decay: float = var_decay       # This is something we can tune/ experiment with. Smaller values make older conflicts 
         # decay faster, so the solver focuses more on recent conflicts. Larger values retain more history, which could be good but
         ## present an issue when search gets deep.
-
-        ## Max-heap ordered by activity. Negation since heapq is a min-heap by default.
         self.var_heap: List[Tuple[float, int]] = [(0.0, v) for v in vars]
         heapq.heapify(self.var_heap)
 
@@ -83,22 +80,14 @@ class SATSolver:
         self.clause_activity: Dict[int, float] = {}   # cid -> activity
         self.clause_inc: float = 1.0
         self.clause_decay: float = clause_decay
-        ## LBD (Literal Block Distance) = number of distinct decision levels
-        ## in a learned clause.  Glucose (Audemard & Simon, IJCAI 2009) showed
-        ## that LBD is a much better quality metric than clause size or activity.
-        ## Clauses with LBD <= 2 ("glue clauses") are almost always useful and
-        ## are kept permanently.
-        self.clause_lbd: Dict[int, int] = {}   # cid -> LBD
+
+        self.clause_lbd: Dict[int, int] = {} 
         ## How many learned clauses before we trigger a cleanup.
         self.max_learnt: int = max_learnt if max_learnt >= 0 else max_learnt_min
         ## Track which cids are learned and alive (not deleted).
         self.alive_learned: Set[int] = set()
 
         ## Maps a literal to the list of clause IDs watching it.
-        ## Flat list indexed by (literal + max_var) eliminates dict hash lookups.
-        ## Literals range from -max_var to +max_var, so size = 2*max_var+1.
-        ## Inner arrays are array.array('i') so propagate can cast to typed
-        ## memoryview for direct C-level index access in the hot loop.
         self._wl_off: int = self.max_var
         self.watch_list = [array.array('i') for _ in range(2 * self.max_var + 1)]
         self._init_watches()
@@ -505,7 +494,6 @@ class SATSolver:
             backjump_level = 0
 
         ## LBD = number of distinct decision levels in the learned clause.
-        ## Computed via a small set over the levels we already collected.
         lbd_set: Set[int] = set()
         for tv in learned_trail:
             tlit = learned_buf[tv]

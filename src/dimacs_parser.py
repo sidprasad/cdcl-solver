@@ -12,7 +12,6 @@ class DimacsParser:
             line = None
             tokens = None
             
-            # Skip comments
             while True:
                 try:
                     line = next(iterator).strip()

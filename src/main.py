@@ -28,30 +28,11 @@ def main(args):
         if instance:
             from solver import SATSolver
 
-            ## ── Instance-adaptive hyperparameters ──────────────────
-            ## Classify by clause/variable density and choose config.
-            ## Idea from SATzilla / AutoFolio portfolio-solver approach
-            ## (Xu et al. 2008, Lindauer et al. 2015) — lightweight
-            ## version using density as the single discriminating feature.
-            ##
-            ## Density thresholds informed by:
-            ##  - 3-SAT phase transition at ~4.26 (Vardi et al.)
-            ##  - picoSAT rapid-restart insight for dense instances
-            ##    (Biere, SAT 2008)
-            ##  - MiniSat defaults for structured / low-density instances
-            ##    (Eén & Sörensson, SAT 2003)
             n_vars = len(instance.vars)
             n_clauses = len(instance.clauses)
             density = n_clauses / n_vars if n_vars > 0 else 0.0
 
             if density <= 6.0:
-                ## Low-density / large structured instances.
-                ## Long VSIDS memory (var_decay~0.99) keeps focus on the
-                ## same region of the search space — good for structured
-                ## formulas (Eén & Sörensson, MiniSat tech report).
-                ## Longer Luby runs let propagation exploit structure
-                ## before restarting (Luby et al. 1993).
-                #print(f"Low-density instance (density={density:.2f}), using long-term VSIDS and longer restarts")
                 solver = SATSolver(
                     instance,
                     var_decay=0.99,
@@ -62,10 +43,6 @@ def main(args):
                     max_learnt_growth=1.05,
                 )
             elif density <= 30.0:
-                ## Medium-density — near or above 3-SAT phase transition.
-                ## Tight learned-clause DB: keeps watch lists short for
-                ## faster propagation (~40% more conflicts/sec in sweep).
-                #print(f"Medium-density instance (density={density:.2f}), using tight-db MiniSat parameters")
                 solver = SATSolver(
                     instance,
                     var_decay=0.95,
@@ -76,14 +53,7 @@ def main(args):
                     max_learnt_growth=1.05,
                 )
             else:
-                ## High-density — massively constrained.
-                ## Fast VSIDS decay (0.85) forgets old conflicts quickly,
-                ## avoiding commitment to stale search directions Rapid restarts 
-                # (let the solver escape bad regions early. Higher
-                # random_freq provides diversification to avoid plateaus.
-                # Aggressive learned-clause cleanup prevents memory blowup
-                ## when clauses/var ratio is enormous.
-                #print(f"High-density instance (density={density:.2f}), using fast VSIDS decay and rapid restarts")
+                
                 solver = SATSolver(
                     instance,
                     var_decay=0.85,
